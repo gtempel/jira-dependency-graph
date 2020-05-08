@@ -23,3 +23,11 @@ wheels/
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+
+*.dot
+
+issue_graph.png
+
+.vscode/
+
+jira-dependency-graph.py.zip
