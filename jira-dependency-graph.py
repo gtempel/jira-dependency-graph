@@ -21,48 +21,53 @@ class JiraGraph(object):
         traverse the Jira cases and links. It's providing a wrapper around the specific
         method of storage so we can abstract it.
     """
-
     __graph_data = []
     __seen = []
 
     def add_issue_node(self, node):
         self.__graph_data.append(node)
-        return self
     
     def add_link_node(self, node):
         self.__graph_data.append(node)
-        return self
 
     def mark_as_seen(self, issue_key):
         self.__seen.append(issue_key)
-        return self
     
     def has_seen(self, issue_key):
         return issue_key in self.__seen
     
-    def generate_digraph(self):
-        default_node_shape = 'rect'
+    def generate_digraph(self, default_node_shape):
+        """
+            This method takes the graph information and converts it to dot (graphviz) notation,
+            returning the dot description as a string to the caller.
+        """
         digraph = 'digraph{node [fontname=Helvetica, shape=' + default_node_shape +']; graph [splines=ortho, rankdir=LR];%s}' % ';'.join(self.__graph_data)
         return digraph
 
 class JiraGraphRenderer(object):
-    """ Refactored rendering information from the JiraGraph to here.
+    """ Refactored rendering information from the JiraGraph to here. This class'
+        responsibilities are rendering the graph to a dot (graphviz) file as well
+        as (potentially) a png via a web service call (not working at the moment)
     """
 
-    def generate_dotfile(self, graph, filename='graph_data.dot'):
-        digraph = graph.generate_digraph()
+    def generate_dotfile(self, graph, default_node_shape, filename='graph_data.dot'):
+        """
+            Given the graph object, ask it to be rendered to a dot file
+            then write that file to storage using the given filename.
+        """
+        digraph = graph.generate_digraph(default_node_shape)
         with open(filename, "w") as dotfile:
             dotfile.write(digraph)
             dotfile.close()
         return digraph
 
-    def render(self, graph, filename='issue_graph.png'):
+    def render(self, graph, default_node_shape, filename='issue_graph.png'):
         """ Given a formatted blob of graphviz chart data[1], make the actual request to Google
             and store the resulting image to disk.
 
             [1]: http://code.google.com/apis/chart/docs/gallery/graphviz.html
         """
-        digraph = graph.generate_digraph()
+        digraph = graph.generate_digraph(default_node_shape)
         print('sending: ', GOOGLE_CHART_URL, {'cht':'gv', 'chl': digraph})
 
         response = requests.post(GOOGLE_CHART_URL, data = {'cht':'gv', 'chl': digraph})
@@ -75,12 +80,12 @@ class JiraGraphRenderer(object):
         return filename
 
     # do we really need this?
-    def filter_duplicates(self, lst):
-        # Enumerate the list to restore order lately; reduce the sorted list; restore order
-        def append_unique(acc, item):
-            return acc if acc[-1][1] == item[1] else acc.append(item) or acc
-        srt_enum = sorted(enumerate(lst), key=lambda i_val: i_val[1])
-        return [item[1] for item in sorted(reduce(append_unique, srt_enum, [srt_enum[0]]))]
+    # def filter_duplicates(self, lst):
+    #     # Enumerate the list to restore order lately; reduce the sorted list; restore order
+    #     def append_unique(acc, item):
+    #         return acc if acc[-1][1] == item[1] else acc.append(item) or acc
+    #     srt_enum = sorted(enumerate(lst), key=lambda i_val: i_val[1])
+    #     return [item[1] for item in sorted(reduce(append_unique, srt_enum, [srt_enum[0]]))]
 
 class JiraSearch(object):
     """ This factory will create the actual method used to fetch issues from JIRA. This is really just a closure that
@@ -176,6 +181,16 @@ class JiraSearch(object):
         return self.__base_url + '/browse/' + issue_key
 
 class JiraOptions(object):
+    """
+        This class is used to embody the options or parameters, as specified by
+        defaults or the user. We're employing a trick here to allow for
+        named parameters, one for each possible option, and don't want to have to
+        keep adjusting the options object (or parameters to other class' methods)
+        every time we create a new option. Thus, we're allowing a dictionary as
+        the parameter, and we're merging that dictionary's key/value pairs into
+        this object so they can be directly referenced as instance variables of
+        the object.
+    """
     def __init__(self, kwargs):
         self.__dict__.update(kwargs)
 
@@ -195,11 +210,22 @@ def build_graph_data(graph,
         default_color = 'white'
         colors = {
             'IN PROGRESS': 'yellow',
-            'DONE': 'green'
+            'DONE': 'green',
+            'BLOCKED': 'red',
+            'BLOCKS' : 'red'
         }
         status = status_field['statusCategory']['name'].upper()
         color = colors.get(status, default_color)
         return color
+
+    def get_extra_decorations_for_link_type(link_type):
+        extra = ',color="red", penwidth=4.0' if link_type == "blocks" else ""
+        return extra
+
+    def get_extra_decorations_for_status(status_field):
+        status = status_field['name'].upper()
+        extra = ',color="red", penwidth=4.0' if "BLOCK" in status else ''
+        return extra
 
     def get_issue_type(fields):
         issue_type = fields['issuetype']['name']
@@ -253,11 +279,13 @@ def build_graph_data(graph,
         if islink:
             return '"{}\\n({})"'.format(issue_name, summary)
         
-        return '"{}\\n({})" [shape="{}", href="{}", fillcolor="{}", style=filled]'.format(issue_name, 
+        extras = get_extra_decorations_for_status(status)
+        return '"{}\\n({})" [shape="{}", href="{}", fillcolor="{}", style=filled {}]'.format(issue_name, 
                                                                                             summary, 
                                                                                             issue_shape, 
                                                                                             jira.get_issue_uri(issue_key), 
-                                                                                            get_status_color(status))
+                                                                                            get_status_color(status),
+                                                                                            extras)
 
     def should_ignore_issue(issue):
         issue_key = get_key(issue)
@@ -305,7 +333,7 @@ def build_graph_data(graph,
         if jira_options.verbose:
             log(issue_key + arrow + link_type + arrow + linked_issue_key)
 
-        extra = ',color="red", penwidth=4.0' if link_type == "blocks" else ""
+        extra = get_extra_decorations_for_link_type(link_type)
         if direction not in jira_options.show_directions:
             edge_definition = None
         else:
@@ -479,10 +507,10 @@ def main():
         build_graph_data(graph, issue, jira, jira_options)
    
     if jira_options.local:
-        print(graph.generate_digraph())
+        print(graph.generate_digraph(jira_options.node_shape))
     else:
         graph_renderer = JiraGraphRenderer()
-        graph_renderer.generate_dotfile(graph, 'graph_data.dot')
+        graph_renderer.generate_dotfile(graph, jira_options.node_shape, 'graph_data.dot')
         graph_renderer.render(graph, 'issue_graph.png')
 
 
