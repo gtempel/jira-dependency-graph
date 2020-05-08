@@ -6,7 +6,6 @@ import argparse
 import getpass
 import sys
 import textwrap
-
 import requests
 from functools import reduce
 
@@ -17,19 +16,118 @@ MAX_SUMMARY_LENGTH = 30
 def log(*args):
     print(*args, file=sys.stderr)
 
+class JiraGraph(object):
+    """ This object holds the graph data for the nodes we create while we
+        traverse the Jira cases and links. It's providing a wrapper around the specific
+        method of storage so we can abstract it.
+    """
+
+    __graph_data = []
+    __seen = []
+
+    def add_issue_node(self, node):
+        self.__graph_data.append(node)
+        return self
+    
+    def add_link_node(self, node):
+        self.__graph_data.append(node)
+        return self
+
+    def mark_as_seen(self, issue_key):
+        self.__seen.append(issue_key)
+        return self
+    
+    def has_seen(self, issue_key):
+        return issue_key in self.__seen
+    
+    def generate_digraph(self):
+        default_node_shape = 'rect'
+        digraph = 'digraph{node [fontname=Helvetica, shape=' + default_node_shape +']; graph [splines=ortho, rankdir=LR];%s}' % ';'.join(self.__graph_data)
+        return digraph
+
+class JiraGraphRenderer(object):
+    """ Refactored rendering information from the JiraGraph to here.
+    """
+
+    def generate_dotfile(self, graph, filename='graph_data.dot'):
+        digraph = graph.generate_digraph()
+        with open(filename, "w") as dotfile:
+            dotfile.write(digraph)
+            dotfile.close()
+        return digraph
+
+    def render(self, graph, filename='issue_graph.png'):
+        """ Given a formatted blob of graphviz chart data[1], make the actual request to Google
+            and store the resulting image to disk.
+
+            [1]: http://code.google.com/apis/chart/docs/gallery/graphviz.html
+        """
+        digraph = graph.generate_digraph()
+        print('sending: ', GOOGLE_CHART_URL, {'cht':'gv', 'chl': digraph})
+
+        response = requests.post(GOOGLE_CHART_URL, data = {'cht':'gv', 'chl': digraph})
+
+        with open(filename, 'w+b') as image:
+            print('Writing to ' + filename)
+            binary_format = bytearray(response.content)
+            image.write(binary_format)
+            image.close()
+        return filename
+
+    # do we really need this?
+    def filter_duplicates(self, lst):
+        # Enumerate the list to restore order lately; reduce the sorted list; restore order
+        def append_unique(acc, item):
+            return acc if acc[-1][1] == item[1] else acc.append(item) or acc
+        srt_enum = sorted(enumerate(lst), key=lambda i_val: i_val[1])
+        return [item[1] for item in sorted(reduce(append_unique, srt_enum, [srt_enum[0]]))]
 
 class JiraSearch(object):
     """ This factory will create the actual method used to fetch issues from JIRA. This is really just a closure that
         saves us having to pass a bunch of parameters all over the place all the time. """
 
     __base_url = None
+    __customfields = None
 
-    def __init__(self, url, auth, no_verify_ssl):
+    def __init__(self, url, auth, no_verify_ssl, extra_issue_fields = []):
         self.__base_url = url
         self.url = url + '/rest/api/latest'
         self.auth = auth
         self.no_verify_ssl = no_verify_ssl
-        self.fields = ','.join(['key', 'summary', 'status', 'description', 'issuetype', 'issuelinks', 'subtasks'])
+
+        # Every installation of Jira is different, and things like 'Epic Link' are
+        # assigned to different custom fields. Additionally, the caller (and human behind it)
+        # may be asking for those fields whenever we deal with an issue. Jira doesn't use
+        # the "name" of the custom fields in the JQL, it wants the key (the customfield_XXX),
+        # so we need to hold onto the association and be able to translate betweeen the two.
+        self.__customfields = self.get_customfields()
+        fieldnames = ['key', 'summary', 'status', 'description', 'issuetype', 'issuelinks', 'subtasks']
+        
+        # if the caller asked for extra fields (such as 'Epic Link', etc)
+        self.__fields_to_map = {}
+        for extra_issue_field_name in extra_issue_fields:
+            customfield_name = self.__customfields.get(extra_issue_field_name, None)
+            if customfield_name:
+                fieldnames.append(customfield_name)
+                self.__fields_to_map[customfield_name] = extra_issue_field_name
+        self.fields = ','.join(fieldnames)
+
+    def get_customfields(self):
+        """
+            Uses the Jira API to fetch a list of all of the custom field definitions, where
+            each field is a json object. Of note in the json objects are the keys 'key', which
+            resolves to things like 'customfield_21521' and 'name' which is the name of the
+            custom field like 'Developer Checklist reviewed'.
+
+            This method will fetch that list and convert it into a map of customfield names and
+            customfield keys, creating a mapping of name:customfield.
+        """ 
+        if not self.__customfields:
+            response = self.get('/field')
+            response.raise_for_status()
+            field_list = response.json()
+            self.__customfields = {item['name']:item['key'] for item in field_list if item['key'].startswith('customfield_')}
+        return self.__customfields
 
     def get(self, uri, params={}):
         headers = {'Content-Type' : 'application/json'}
@@ -39,6 +137,25 @@ class JiraSearch(object):
             return requests.get(url, params=params, cookies={'JSESSIONID': self.auth}, headers=headers, verify=self.no_verify_ssl)
         else:
             return requests.get(url, params=params, auth=self.auth, headers=headers, verify=(not self.no_verify_ssl))
+
+    def get_mapped_issue_fields(self, issue_key):
+        """
+            Map things in fields like 'customfield_10234' to 'Epic Link' by using
+            the fieldmap which contains the oldkey:newkeyMapping. The fields will
+            then contain new items newkeyMapping:originalValue pairs and the
+            oldkey:originalValue pairs will be removed.
+        """
+        issue = self.get_issue(issue_key)
+        fields = issue['fields']
+
+        for k, v in self.__fields_to_map.items():
+            fields[v] = fields[k]
+
+        for k in self.__fields_to_map.keys():
+            fields.pop(k, None)
+        
+        return fields
+
 
     def get_issue(self, key):
         """ Given an issue key (i.e. JRA-9) return the JSON representation of it. This is the only place where we deal
@@ -58,42 +175,98 @@ class JiraSearch(object):
     def get_issue_uri(self, issue_key):
         return self.__base_url + '/browse/' + issue_key
 
+class JiraOptions(object):
+    def __init__(self, kwargs):
+        self.__dict__.update(kwargs)
 
-def build_graph_data(start_issue_key, jira, excludes, show_directions, directions, includes, issue_excludes,
-                     ignore_closed, ignore_epic, ignore_subtasks, traverse, word_wrap):
+
+def build_graph_data(graph, 
+                     start_issue_key, 
+                     jira, 
+                     jira_options):
     """ Given a starting image key and the issue-fetching function build up the GraphViz data representing relationships
         between issues. This will consider both subtasks and issue links.
     """
+
     def get_key(issue):
         return issue['key']
 
     def get_status_color(status_field):
+        default_color = 'white'
+        colors = {
+            'IN PROGRESS': 'yellow',
+            'DONE': 'green'
+        }
         status = status_field['statusCategory']['name'].upper()
-        if status == 'IN PROGRESS':
-            return 'yellow'
-        elif status == 'DONE':
-            return 'green'
-        return 'white'
+        color = colors.get(status, default_color)
+        return color
+
+    def get_issue_type(fields):
+        issue_type = fields['issuetype']['name']
+        return issue_type
+
+    def get_node_shape(issue_key, fields, default_shape='rect'):
+        shapes = {
+            "Epic": "oval", #"diamond",
+            "Story": default_shape,
+            "Spike": default_shape,
+            "subtask": "text", #"oval",
+            "Task": "MCircle",
+            "Certified": "octagon"
+        }
+
+        issue_type = get_issue_type(fields)
+        shape = shapes.get(issue_type, default_shape)
+        return shape
+
+    def create_node_name(issue_key, fields):
+        no_issue_type_prefixes = [
+            'Story',
+            'Certified',
+            'Task'
+        ]
+        
+        issue_type = get_issue_type(fields)
+        if issue_type in no_issue_type_prefixes:
+            return issue_key
+        return '{} {}'.format(issue_type, issue_key)
 
     def create_node_text(issue_key, fields, islink=True):
+        default_shape = 'rect'
+        issue_shape = get_node_shape(issue_key, fields, default_shape)
+        issue_name = create_node_name(issue_key, fields)
+
         summary = fields['summary']
         status = fields['status']
 
-        if word_wrap == True:
+        if jira_options.word_wrap == True:
             if len(summary) > MAX_SUMMARY_LENGTH:
                 # split the summary into multiple lines adding a \n to each line
-                summary = textwrap.fill(fields['summary'], MAX_SUMMARY_LENGTH)
+                summary = textwrap.fill(summary, MAX_SUMMARY_LENGTH)
         else:
             # truncate long labels with "...", but only if the three dots are replacing more than two characters
             # -- otherwise the truncated label would be taking more space than the original.
             if len(summary) > MAX_SUMMARY_LENGTH + 2:
-                summary = fields['summary'][:MAX_SUMMARY_LENGTH] + '...'
+                summary = summary[:MAX_SUMMARY_LENGTH] + '...'
         summary = summary.replace('"', '\\"')
-        # log('node ' + issue_key + ' status = ' + str(status))
 
         if islink:
-            return '"{}\\n({})"'.format(issue_key, summary)
-        return '"{}\\n({})" [href="{}", fillcolor="{}", style=filled]'.format(issue_key, summary, jira.get_issue_uri(issue_key), get_status_color(status))
+            return '"{}\\n({})"'.format(issue_name, summary)
+        
+        return '"{}\\n({})" [shape="{}", href="{}", fillcolor="{}", style=filled]'.format(issue_name, 
+                                                                                            summary, 
+                                                                                            issue_shape, 
+                                                                                            jira.get_issue_uri(issue_key), 
+                                                                                            get_status_color(status))
+
+    def should_ignore_issue(issue):
+        issue_key = get_key(issue)
+        issue_type = get_issue_type(issue['fields'])
+        if (jira_options.issue_excludes and (issue_key in jira_options.issue_excludes)) or (jira_options.ignore_types and (issue_type in jira_options.ignore_types)):
+            if jira_options.verbose:
+                log('Issue ' + issue_key + ' - should be ignored')
+            return True
+        return False
 
     def process_link(fields, issue_key, link):
         if 'outwardIssue' in link:
@@ -103,130 +276,140 @@ def build_graph_data(start_issue_key, jira, excludes, show_directions, direction
         else:
             return
 
-        if direction not in directions:
+        if direction not in jira_options.directions:
             return
 
-        linked_issue = link[direction + 'Issue']
+
+        link_issue_direction = direction + 'Issue'
+        linked_issue = link[link_issue_direction]
         linked_issue_key = get_key(linked_issue)
-        if linked_issue_key in issue_excludes:
-            log('Skipping ' + linked_issue_key + ' - explicitly excluded')
+        if should_ignore_issue(linked_issue):
+            if jira_options.verbose:
+                log('Skipping ' + linked_issue_key + ' - explicitly excluded')
             return
 
         link_type = link['type'][direction]
 
-        if ignore_closed:
-            if ('inwardIssue' in link) and (link['inwardIssue']['fields']['status']['name'] in 'Closed'):
-                log('Skipping ' + linked_issue_key + ' - linked key is Closed')
-                return
-            if ('outwardIssue' in link) and (link['outwardIssue']['fields']['status']['name'] in 'Closed'):
-                log('Skipping ' + linked_issue_key + ' - linked key is Closed')
-                return
-
-        if includes not in linked_issue_key:
+        if jira_options.ignore_states and link_issue_direction and (link[link_issue_direction]['fields']['status']['name'] in jira_options.ignore_states):
+            if jira_options.verbose:
+                log('Skipping ' + link_issue_direction + ' ' + linked_issue_key + ' - linked key is Closed')
             return
 
-        if link_type.strip() in excludes:
+        if jira_options.includes not in linked_issue_key:
+            return
+
+        if link_type.strip() in jira_options.excludes:
             return linked_issue_key, None
 
         arrow = ' => ' if direction == 'outward' else ' <= '
-        log(issue_key + arrow + link_type + arrow + linked_issue_key)
+        if jira_options.verbose:
+            log(issue_key + arrow + link_type + arrow + linked_issue_key)
 
-        extra = ',color="red"' if link_type == "blocks" else ""
-
-        if direction not in show_directions:
-            node = None
+        extra = ',color="red", penwidth=4.0' if link_type == "blocks" else ""
+        if direction not in jira_options.show_directions:
+            edge_definition = None
         else:
-            # log("Linked issue summary " + linked_issue['fields']['summary'])
-            node = '{}->{}[label="{}"{}]'.format(
+            if jira_options.verbose:
+                log(create_node_name(issue_key, fields))
+            edge_definition = '{}->{}[label="{}"{}]'.format(
                 create_node_text(issue_key, fields),
                 create_node_text(linked_issue_key, linked_issue['fields']),
-                link_type, extra)
+                '',
+                extra)
 
-        return linked_issue_key, node
+        return linked_issue_key, edge_definition
 
-    # since the graph can be cyclic we need to prevent infinite recursion
-    seen = []
+    def add_node_to_graph(graph, issue_key, fields, islink = False):
+        node_text = create_node_text(issue_key, fields, islink=False)
+        if islink:
+            add_link_to_graph(graph, node_text)
+        else:
+            graph.add_issue_node(node_text)
+        return node_text
+
+    def add_link_to_graph(graph, line_definition):
+        graph.add_link_node(line_definition)
+        return line_definition
 
     def walk(issue_key, graph):
         """ issue is the JSON representation of the issue """
-        issue = jira.get_issue(issue_key)
+        fields = jira.get_mapped_issue_fields(issue_key)
+
+        graph.mark_as_seen(issue_key)
+
         children = []
-        fields = issue['fields']
-        seen.append(issue_key)
 
-        if ignore_closed and (fields['status']['name'] in 'Closed'):
-            log('Skipping ' + issue_key + ' - it is Closed')
+        if jira_options.ignore_states and (fields['status']['name'] in jira_options.ignore_states):
+            if jira_options.verbose:
+                log('Skipping ' + issue_key + ' - it is Closed')
             return graph
 
-        if not traverse and ((project_prefix + '-') not in issue_key):
-            log('Skipping ' + issue_key + ' - not traversing to a different project')
+        if not jira_options.traverse and ((project_prefix + '-') not in issue_key):
+            if jira_options.verbose:
+                log('Skipping ' + issue_key + ' - not traversing to a different project')
             return graph
 
-        graph.append(create_node_text(issue_key, fields, islink=False))
+        add_node_to_graph(graph, issue_key, fields, islink = False)
 
-        if not ignore_subtasks:
-            if fields['issuetype']['name'] == 'Epic' and not ignore_epic:
+        issue_type = get_issue_type(fields)
+        issue_name = create_node_name(issue_key, fields)
+
+        if True: #not ignore_subtasks:
+            if issue_type == 'Epic' and not jira_options.ignore_epic:
                 issues = jira.query('"Epic Link" = "%s"' % issue_key)
                 for subtask in issues:
-                    subtask_key = get_key(subtask)
-                    log(subtask_key + ' => references epic => ' + issue_key)
-                    node = '{}->{}[color=orange]'.format(
-                        create_node_text(issue_key, fields),
-                        create_node_text(subtask_key, subtask['fields']))
-                    graph.append(node)
-                    children.append(subtask_key)
-            if 'subtasks' in fields and not ignore_subtasks:
-                for subtask in fields['subtasks']:
-                    subtask_key = get_key(subtask)
-                    log(issue_key + ' => has subtask => ' + subtask_key)
-                    node = '{}->{}[color=blue][label="subtask"]'.format (
+                    if not should_ignore_issue(subtask):
+                        subtask_key = get_key(subtask)
+                        if jira_options.verbose:
+                            log(subtask_key + ' => references => ' + issue_name)
+                        link_text = '{}->{}[color=orange]'.format(
                             create_node_text(issue_key, fields),
                             create_node_text(subtask_key, subtask['fields']))
-                    graph.append(node)
-                    children.append(subtask_key)
+                        add_link_to_graph(graph, link_text)
+                        children.append(subtask_key)
+            if 'subtasks' in fields and not jira_options.ignore_subtasks:
+                for subtask in fields['subtasks']:
+                    if not should_ignore_issue(subtask):
+                        subtask_key = get_key(subtask)
+                        subtask_name = create_node_name(subtask_key, subtask['fields'])
+                        if jira_options.verbose:
+                            log(issue_name + ' => has subtask => ' + subtask_name)
+                        link_text = '{}->{}[color=blue][label="subtask"]'.format (
+                                create_node_text(issue_key, fields),
+                                create_node_text(subtask_key, subtask['fields']))
+                        add_link_to_graph(graph, link_text)
+                        children.append(subtask_key)
 
         if 'issuelinks' in fields:
             for other_link in fields['issuelinks']:
+                # conditionally generate the link between issue_key and the other_link
+                # this will be an edge or directed-line in the visualization, and does
+                # not define the nodes in question
                 result = process_link(fields, issue_key, other_link)
                 if result is not None:
-                    log('Appending ' + result[0])
+                    if jira_options.verbose:
+                        log('Appending ' + result[0])
                     children.append(result[0])
                     if result[1] is not None:
-                        graph.append(result[1])
-        # now construct graph data for all subtasks and links of this issue
-        for child in (x for x in children if x not in seen):
+                        graph.add_link_node(result[1])
+    
+        # now construct graph data for all children, which could be:
+        #   items in the epic
+        #   subtasks
+        #   links to/from this issue
+        for child in (x for x in children if not graph.has_seen(x)):
             walk(child, graph)
         return graph
 
+
     project_prefix = start_issue_key.split('-', 1)[0]
-    return walk(start_issue_key, [])
 
+    return walk(start_issue_key, graph)
 
-def create_graph_image(graph_data, image_file, node_shape):
-    """ Given a formatted blob of graphviz chart data[1], make the actual request to Google
-        and store the resulting image to disk.
-
-        [1]: http://code.google.com/apis/chart/docs/gallery/graphviz.html
-    """
-    digraph = 'digraph{node [shape=' + node_shape +'];%s}' % ';'.join(graph_data)
-
-    response = requests.post(GOOGLE_CHART_URL, data = {'cht':'gv', 'chl': digraph})
-
-    with open(image_file, 'w+b') as image:
-        print('Writing to ' + image_file)
-        binary_format = bytearray(response.content)
-        image.write(binary_format)
-        image.close()
-
-    return image_file
-
-
-def print_graph(graph_data, node_shape):
-    print('digraph{\nnode [shape=' + node_shape +'];\n\n%s\n}' % ';\n'.join(graph_data))
 
 
 def parse_args():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(conflict_handler='resolve')
     parser.add_argument('-u', '--user', dest='user', default=None, help='Username to access JIRA')
     parser.add_argument('-p', '--password', dest='password', default=None, help='Password to access JIRA')
     parser.add_argument('-c', '--cookie', dest='cookie', default=None, help='JSESSIONID session cookie value')
@@ -235,7 +418,8 @@ def parse_args():
     parser.add_argument('-l', '--local', action='store_true', default=False, help='Render graphviz code to stdout')
     parser.add_argument('-e', '--ignore-epic', action='store_true', default=False, help='Don''t follow an Epic into it''s children issues')
     parser.add_argument('-x', '--exclude-link', dest='excludes', default=[], action='append', help='Exclude link type(s)')
-    parser.add_argument('-ic', '--ignore-closed', dest='closed', action='store_true', default=False, help='Ignore closed issues')
+    parser.add_argument('-it', '--ignore-type', dest='ignore_types', action='append', default=[], help='Ignore issues of this type')
+    parser.add_argument('-is', '--ignore-state', dest='ignore_states', action='append', default=[], help='Ignore issues with this state')
     parser.add_argument('-i', '--issue-include', dest='includes', default='', help='Include issue keys')
     parser.add_argument('-xi', '--issue-exclude', dest='issue_excludes', action='append', default=[], help='Exclude issue keys; can be repeated for multiple issues')
     parser.add_argument('-s', '--show-directions', dest='show_directions', default=['inward', 'outward'], help='which directions to show (inward, outward)')
@@ -244,17 +428,32 @@ def parse_args():
     parser.add_argument('-t', '--ignore-subtasks', action='store_true', default=False, help='Don''t include sub-tasks issues')
     parser.add_argument('-T', '--dont-traverse', dest='traverse', action='store_false', default=True, help='Do not traverse to other projects')
     parser.add_argument('-w', '--word-wrap', dest='word_wrap', default=False, action='store_true', help='Word wrap issue summaries instead of truncating them')
+    parser.add_argument('-v', '--verbose', dest='verbose', default=False, action='store_true', help='Verbose logging')
+
     parser.add_argument('--no-verify-ssl', dest='no_verify_ssl', default=False, action='store_true', help='Don\'t verify SSL certs for requests')
     parser.add_argument('issues', nargs='+', help='The issue key (e.g. JRADEV-1107, JRADEV-1391)')
-    return parser.parse_args()
+
+    return parser.parse_args([
+        '--user', 'gtempel@billtrust.com',
+        '--password', 'QZ12rb4a5VEyBPwwOxZS8C27',
+        '--jira', 'https://billtrust.atlassian.net',
+        # '--ignore-closed',
+        '--ignore-state', 'Closed',
+        '--ignore-state', 'Done',
+        '--ignore-state', 'Completed',
+        '--exclude-link', 'clones',
+        '--exclude-link', 'is cloned by',
+        '--exclude-link', 'is blocked by',
+        '--exclude-link', 'is related to',
+        '--issue-include', 'ARC',
+        '--ignore-type', 'Certified',
+        '--ignore-type', 'Bug',
+        '--ignore-subtasks', 
+        'ARC-5164'
+        ]
+    )
 
 
-def filter_duplicates(lst):
-    # Enumerate the list to restore order lately; reduce the sorted list; restore order
-    def append_unique(acc, item):
-        return acc if acc[-1][1] == item[1] else acc.append(item) or acc
-    srt_enum = sorted(enumerate(lst), key=lambda i_val: i_val[1])
-    return [item[1] for item in sorted(reduce(append_unique, srt_enum, [srt_enum[0]]))]
 
 
 def main():
@@ -271,18 +470,21 @@ def main():
                     else getpass.getpass('Password: ')
         auth = (user, password)
 
-    jira = JiraSearch(options.jira_url, auth, options.no_verify_ssl)
+    jira = JiraSearch(options.jira_url, auth, options.no_verify_ssl, ['Epic Link'])
+    graph = JiraGraph()
 
-    graph = []
-    for issue in options.issues:
-        graph = graph + build_graph_data(issue, jira, options.excludes, options.show_directions, options.directions,
-                                         options.includes, options.issue_excludes, options.closed, options.ignore_epic,
-                                         options.ignore_subtasks, options.traverse, options.word_wrap)
+    jira_options = JiraOptions(vars(options))
 
-    if options.local:
-        print_graph(filter_duplicates(graph), options.node_shape)
+    for issue in jira_options.issues:
+        build_graph_data(graph, issue, jira, jira_options)
+   
+    if jira_options.local:
+        print(graph.generate_digraph())
     else:
-        create_graph_image(filter_duplicates(graph), options.image_file, options.node_shape)
+        graph_renderer = JiraGraphRenderer()
+        graph_renderer.generate_dotfile(graph, 'graph_data.dot')
+        graph_renderer.render(graph, 'issue_graph.png')
+
 
 
 if __name__ == '__main__':
