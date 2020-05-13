@@ -41,7 +41,9 @@ class JiraGraph(object):
             This method takes the graph information and converts it to dot (graphviz) notation,
             returning the dot description as a string to the caller.
         """
-        digraph = 'digraph{node [fontname=Helvetica, shape=' + default_node_shape +']; graph [splines=ortho, rankdir=LR];%s}' % ';'.join(self.__graph_data)
+        graph_defaults = 'graph [rankdir=LR];' # splines=ortho
+        node_defaults = 'node [fontname=Helvetica, shape=' + default_node_shape +'];'
+        digraph = 'digraph{' + node_defaults + graph_defaults + '%s}' % ';'.join(self.__graph_data)
         return digraph
 
 class JiraGraphRenderer(object):
@@ -143,6 +145,26 @@ class JiraSearch(object):
         else:
             return requests.get(url, params=params, auth=self.auth, headers=headers, verify=(not self.no_verify_ssl))
 
+    def get_labels(self, labels_to_find):
+        labels = []
+        if labels_to_find:
+            labels_to_find = set(labels_to_find)
+            start_at = 0
+            is_last = False
+            while not is_last:
+                response = self.get('/label?startAt={startAt}'.format(startAt=start_at))
+                response.raise_for_status()
+                payload = response.json()
+                # use 'all' below to AND the labels_to_find (has to match each of the find terms)
+                # use 'any' below to OR the labels_to_find (has to match at least one find term)
+                new_labels = [label for label in payload['values'] if all(sub in label for sub in labels_to_find)]
+                if new_labels:
+                    labels = labels + new_labels
+                start_at = start_at + len(payload['values'])
+                is_last = payload['isLast']
+
+        return labels
+
     def get_mapped_issue_fields(self, issue_key):
         """
             Map things in fields like 'customfield_10234' to 'Epic Link' by using
@@ -195,12 +217,12 @@ class JiraOptions(object):
         self.__dict__.update(kwargs)
 
 
-def build_graph_data(graph, 
+def build_graph_data(graph,
                      start_issue_key, 
                      jira, 
                      jira_options):
     """ Given a starting image key and the issue-fetching function build up the GraphViz data representing relationships
-        between issues. This will consider both subtasks and issue links.
+        between issues. This will consider both subtasks and issue links, among other things, as per the jira_options.
     """
 
     def get_key(issue):
@@ -249,7 +271,8 @@ def build_graph_data(graph,
         no_issue_type_prefixes = [
             'Story',
             'Certified',
-            'Task'
+            'Task',
+            'ACL (Access Control Language)'
         ]
         
         issue_type = get_issue_type(fields)
@@ -360,7 +383,6 @@ def build_graph_data(graph,
         return line_definition
 
     def walk(issue_key, graph):
-        """ issue is the JSON representation of the issue """
         fields = jira.get_mapped_issue_fields(issue_key)
 
         graph.mark_as_seen(issue_key)
@@ -369,7 +391,7 @@ def build_graph_data(graph,
 
         if jira_options.ignore_states and (fields['status']['name'] in jira_options.ignore_states):
             if jira_options.verbose:
-                log('Skipping ' + issue_key + ' - it is Closed')
+                log('Skipping ' + issue_key + ' - state is one of ' + ','.join(jira_options.ignore_states))
             return graph
 
         if not jira_options.traverse and ((project_prefix + '-') not in issue_key):
@@ -457,6 +479,8 @@ def parse_args():
     parser.add_argument('-T', '--dont-traverse', dest='traverse', action='store_false', default=True, help='Do not traverse to other projects')
     parser.add_argument('-w', '--word-wrap', dest='word_wrap', default=False, action='store_true', help='Word wrap issue summaries instead of truncating them')
     parser.add_argument('-v', '--verbose', dest='verbose', default=False, action='store_true', help='Verbose logging')
+    parser.add_argument('-af', '--add-field', dest='extra_fields', action='append', default=[], help='Include these extra fields from the issues, such as "Epic Link"')
+    parser.add_argument('-la', '--label', dest='labels', action='append', default=[], help='Find these labels (ex: "B&P_Ingestion")')
 
     parser.add_argument('--no-verify-ssl', dest='no_verify_ssl', default=False, action='store_true', help='Don\'t verify SSL certs for requests')
     parser.add_argument('issues', nargs='+', help='The issue key (e.g. JRADEV-1107, JRADEV-1391)')
@@ -465,10 +489,11 @@ def parse_args():
         '--user', 'gtempel@billtrust.com',
         '--password', 'QZ12rb4a5VEyBPwwOxZS8C27',
         '--jira', 'https://billtrust.atlassian.net',
-        # '--ignore-closed',
         '--ignore-state', 'Closed',
         '--ignore-state', 'Done',
+        '--ignore-state', 'Deployed',
         '--ignore-state', 'Completed',
+        '--ignore-state', 'Rolled',
         '--exclude-link', 'clones',
         '--exclude-link', 'is cloned by',
         '--exclude-link', 'is blocked by',
@@ -476,7 +501,12 @@ def parse_args():
         '--issue-include', 'ARC',
         '--ignore-type', 'Certified',
         '--ignore-type', 'Bug',
+        '--ignore-type', 'Test',
         '--ignore-subtasks', 
+        '--add-field', 'Epic Link',
+        '--add-field', 'labels',
+        '--label', 'B&P',
+        '--verbose', 
         'ARC-5164'
         ]
     )
@@ -498,10 +528,14 @@ def main():
                     else getpass.getpass('Password: ')
         auth = (user, password)
 
-    jira = JiraSearch(options.jira_url, auth, options.no_verify_ssl, ['Epic Link'])
+    jira = JiraSearch(options.jira_url, auth, options.no_verify_ssl, options.extra_fields)
     graph = JiraGraph()
 
     jira_options = JiraOptions(vars(options))
+
+    labels = jira.get_labels(jira_options.labels)
+    if labels and jira_options.verbose:
+        print(labels)
 
     for issue in jira_options.issues:
         build_graph_data(graph, issue, jira, jira_options)
