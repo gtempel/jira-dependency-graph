@@ -23,6 +23,7 @@ class JiraGraph(object):
     """
     __graph_data = []
     __seen = []
+    __blockers = set()
 
     def add_issue_node(self, node):
         self.__graph_data.append(node)
@@ -35,7 +36,10 @@ class JiraGraph(object):
     
     def has_seen(self, issue_key):
         return issue_key in self.__seen
-    
+
+    def add_to_blockers(self, node):
+        self.__blockers.add(node)
+
     def generate_digraph(self, default_node_shape):
         """
             This method takes the graph information and converts it to dot (graphviz) notation,
@@ -43,7 +47,12 @@ class JiraGraph(object):
         """
         graph_defaults = 'graph [rankdir=LR];' # splines=ortho
         node_defaults = 'node [fontname=Helvetica, shape=' + default_node_shape +'];'
-        digraph = 'digraph{' + node_defaults + graph_defaults + '%s}' % ';'.join(self.__graph_data)
+        blockers = ';\n'.join(self.__blockers)
+        graph = ';\n'.join(self.__graph_data)
+        digraph = "digraph{{\n{node_defaults}\n{graph_defaults}\n{graph}\n{blockers}\n}}".format(node_defaults=node_defaults,
+                                                                                            graph_defaults=graph_defaults,
+                                                                                            graph=graph,
+                                                                                            blockers=blockers)
         return digraph
 
 class JiraGraphRenderer(object):
@@ -201,6 +210,8 @@ class JiraSearch(object):
 
     def get_issue_uri(self, issue_key):
         return self.__base_url + '/browse/' + issue_key
+    
+
 
 class JiraOptions(object):
     """
@@ -246,7 +257,7 @@ def build_graph_data(graph,
 
     def get_extra_decorations_for_status(status_field):
         status = status_field['name'].upper()
-        extra = ',color="red", penwidth=4.0' if "BLOCK" in status else ''
+        extra = ',color="red", penwidth=4.0' if is_a_block(status) else ''
         return extra
 
     def get_issue_type(fields):
@@ -267,6 +278,39 @@ def build_graph_data(graph,
         shape = shapes.get(issue_type, default_shape)
         return shape
 
+    def get_node_summary(issue_key, fields):
+        summary = fields['summary']
+
+        if jira_options.word_wrap == True:
+            if len(summary) > MAX_SUMMARY_LENGTH:
+                # split the summary into multiple lines adding a \n to each line
+                summary = textwrap.fill(summary, MAX_SUMMARY_LENGTH)
+        else:
+            # truncate long labels with "...", but only if the three dots are replacing more than two characters
+            # -- otherwise the truncated label would be taking more space than the original.
+            if len(summary) > MAX_SUMMARY_LENGTH + 2:
+                summary = summary[:MAX_SUMMARY_LENGTH] + '...'
+        summary = summary.replace('"', '\\"')
+        return summary
+
+    def create_node_identifier(issue_key, fields):
+        issue_name = create_node_name(issue_key, fields)
+        summary = get_node_summary(issue_key, fields)
+
+        if jira_options.word_wrap == True:
+            if len(summary) > MAX_SUMMARY_LENGTH:
+                # split the summary into multiple lines adding a \n to each line
+                summary = textwrap.fill(summary, MAX_SUMMARY_LENGTH)
+        else:
+            # truncate long labels with "...", but only if the three dots are replacing more than two characters
+            # -- otherwise the truncated label would be taking more space than the original.
+            if len(summary) > MAX_SUMMARY_LENGTH + 2:
+                summary = summary[:MAX_SUMMARY_LENGTH] + '...'
+        summary = summary.replace('"', '\\"')
+
+        identifier = '{}\\n({})'.format(issue_name, summary)
+        return identifier
+
     def create_node_name(issue_key, fields):
         no_issue_type_prefixes = [
             'Story',
@@ -280,31 +324,28 @@ def build_graph_data(graph,
             return issue_key
         return '{} {}'.format(issue_type, issue_key)
 
+    def is_a_block(text):
+        text = text.strip().upper()
+        return 'BLOCK' in text
+
+    def add_block(issue_key, fields):
+        node_identifier = create_node_identifier(issue_key, fields)
+        node = '"{}" [color=red, penwidth=2]'.format(node_identifier)
+        graph.add_to_blockers(node)
+
     def create_node_text(issue_key, fields, islink=True):
         default_shape = 'rect'
         issue_shape = get_node_shape(issue_key, fields, default_shape)
         issue_name = create_node_name(issue_key, fields)
 
-        summary = fields['summary']
-        status = fields['status']
-
-        if jira_options.word_wrap == True:
-            if len(summary) > MAX_SUMMARY_LENGTH:
-                # split the summary into multiple lines adding a \n to each line
-                summary = textwrap.fill(summary, MAX_SUMMARY_LENGTH)
-        else:
-            # truncate long labels with "...", but only if the three dots are replacing more than two characters
-            # -- otherwise the truncated label would be taking more space than the original.
-            if len(summary) > MAX_SUMMARY_LENGTH + 2:
-                summary = summary[:MAX_SUMMARY_LENGTH] + '...'
-        summary = summary.replace('"', '\\"')
-
         if islink:
+            summary = get_node_summary(issue_key, fields)
             return '"{}\\n({})"'.format(issue_name, summary)
         
+        node_identifier = create_node_identifier(issue_key, fields)
+        status = fields['status']
         extras = get_extra_decorations_for_status(status)
-        return '"{}\\n({})" [shape="{}", href="{}", fillcolor="{}", style=filled {}]'.format(issue_name, 
-                                                                                            summary, 
+        return '"{}" [shape="{}", href="{}", fillcolor="{}", style=filled {}]'.format(node_identifier, 
                                                                                             issue_shape, 
                                                                                             jira.get_issue_uri(issue_key), 
                                                                                             get_status_color(status),
@@ -367,6 +408,9 @@ def build_graph_data(graph,
                 create_node_text(linked_issue_key, linked_issue['fields']),
                 '',
                 extra)
+            if jira_options.blockers and is_a_block(link_type):
+                add_block(issue_key, fields)
+                add_block(linked_issue_key, linked_issue['fields'])
 
         return linked_issue_key, edge_definition
 
@@ -481,6 +525,7 @@ def parse_args():
     parser.add_argument('-v', '--verbose', dest='verbose', default=False, action='store_true', help='Verbose logging')
     parser.add_argument('-af', '--add-field', dest='extra_fields', action='append', default=[], help='Include these extra fields from the issues, such as "Epic Link"')
     parser.add_argument('-la', '--label', dest='labels', action='append', default=[], help='Find these labels (ex: "B&P_Ingestion")')
+    parser.add_argument('-b', '--blockers', dest='blockers', default=False, action='store_true', help='Highlight blocking and blocked items')
 
     parser.add_argument('--no-verify-ssl', dest='no_verify_ssl', default=False, action='store_true', help='Don\'t verify SSL certs for requests')
     parser.add_argument('issues', nargs='+', help='The issue key (e.g. JRADEV-1107, JRADEV-1391)')
@@ -507,6 +552,7 @@ def parse_args():
         '--add-field', 'labels',
         '--label', 'B&P',
         '--verbose', 
+        '--blockers',
         'ARC-5164'
         ]
     )
