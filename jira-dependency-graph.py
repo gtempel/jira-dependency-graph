@@ -21,15 +21,15 @@ class JiraGraph(object):
         traverse the Jira cases and links. It's providing a wrapper around the specific
         method of storage so we can abstract it.
     """
-    __graph_data = []
+    __graph_data = { 'nodes': [], 'links': [] }
     __seen = []
     __blockers = set()
 
     def add_issue_node(self, node):
-        self.__graph_data.append(node)
+        self.__graph_data['nodes'].append(node)
     
     def add_link_node(self, node):
-        self.__graph_data.append(node)
+        self.__graph_data['links'].append(node)
 
     def mark_as_seen(self, issue_key):
         self.__seen.append(issue_key)
@@ -48,7 +48,11 @@ class JiraGraph(object):
         graph_defaults = 'graph [rankdir=LR];' # splines=ortho
         node_defaults = 'node [fontname=Helvetica, shape=' + default_node_shape +'];'
         blockers = ';\n'.join(self.__blockers)
-        graph = ';\n'.join(self.__graph_data)
+
+        nodes = ';\n'.join(self.__graph_data['nodes'])
+        links = ';\n'.join(self.__graph_data['links'])
+        graph = nodes + ';\n' + links
+
         digraph = "digraph{{\n{node_defaults}\n{graph_defaults}\n{graph}\n{blockers}\n}}".format(node_defaults=node_defaults,
                                                                                             graph_defaults=graph_defaults,
                                                                                             graph=graph,
