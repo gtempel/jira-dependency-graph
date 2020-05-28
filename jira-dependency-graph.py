@@ -236,6 +236,7 @@ def build_graph_data(graph,
                      start_issue_key, 
                      jira, 
                      jira_options):
+                     
     """ Given a starting image key and the issue-fetching function build up the GraphViz data representing relationships
         between issues. This will consider both subtasks and issue links, among other things, as per the jira_options.
     """
@@ -294,7 +295,7 @@ def build_graph_data(graph,
             # -- otherwise the truncated label would be taking more space than the original.
             if len(summary) > MAX_SUMMARY_LENGTH + 2:
                 summary = summary[:MAX_SUMMARY_LENGTH] + '...'
-        summary = summary.replace('"', '\\"')
+        summary = summary.replace('"', '\"')
         return summary
 
     def create_node_identifier(issue_key, fields):
@@ -410,7 +411,7 @@ def build_graph_data(graph,
             edge_definition = '{}->{}[label="{}"{}]'.format(
                 create_node_text(issue_key, fields),
                 create_node_text(linked_issue_key, linked_issue['fields']),
-                '',
+                link_type if link_type in jira_options.link_labels else '',
                 extra)
             if jira_options.blockers and is_a_block(link_type):
                 add_block(issue_key, fields)
@@ -501,7 +502,6 @@ def build_graph_data(graph,
 
 
     project_prefix = start_issue_key.split('-', 1)[0]
-
     return walk(start_issue_key, graph)
 
 
@@ -516,6 +516,7 @@ def parse_args():
     parser.add_argument('-l', '--local', action='store_true', default=False, help='Render graphviz code to stdout')
     parser.add_argument('-e', '--ignore-epic', action='store_true', default=False, help='Don''t follow an Epic into it''s children issues')
     parser.add_argument('-x', '--exclude-link', dest='excludes', default=[], action='append', help='Exclude link type(s)')
+    parser.add_argument('-ll', '--link-label', dest='link_labels', default=[], action='append', help='Provide labels for this type of relationship, such as "blocks"')
     parser.add_argument('-it', '--ignore-type', dest='ignore_types', action='append', default=[], help='Ignore issues of this type')
     parser.add_argument('-is', '--ignore-state', dest='ignore_states', action='append', default=[], help='Ignore issues with this state')
     parser.add_argument('-i', '--issue-include', dest='includes', default='', help='Include issue keys')
@@ -547,17 +548,19 @@ def parse_args():
         '--exclude-link', 'is cloned by',
         '--exclude-link', 'is blocked by',
         '--exclude-link', 'is related to',
-        '--issue-include', 'ARC',
-        '--ignore-type', 'Certified',
+        # '--link-label', 'blocks',
+        #'--issue-include', 'ARC',
+        #'--ignore-type', 'Certified',
         '--ignore-type', 'Bug',
         '--ignore-type', 'Test',
         '--ignore-subtasks', 
         '--add-field', 'Epic Link',
         '--add-field', 'labels',
-        '--label', 'B&P',
-        '--verbose', 
+        # '--label', 'B&P',
+        # '--verbose', 
         '--blockers',
-        'ARC-5164'
+        # 'ARC-5360'
+        'CERT-1070', 'CERT-929', 'CERT-803'
         ]
     )
 
