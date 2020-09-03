@@ -21,18 +21,18 @@ class JiraGraph(object):
         traverse the Jira cases and links. It's providing a wrapper around the specific
         method of storage so we can abstract it.
     """
-    __graph_data = { 'nodes': [], 'links': [] }
-    __seen = []
+    __graph_data = { 'nodes': set(), 'links': set() }
+    __seen = set()
     __blockers = set()
 
     def add_issue_node(self, node):
-        self.__graph_data['nodes'].append(node)
+        self.__graph_data['nodes'].add(node)
     
     def add_link_node(self, node):
-        self.__graph_data['links'].append(node)
+        self.__graph_data['links'].add(node)
 
     def mark_as_seen(self, issue_key):
-        self.__seen.append(issue_key)
+        self.__seen.add(issue_key)
     
     def has_seen(self, issue_key):
         return issue_key in self.__seen
@@ -158,6 +158,14 @@ class JiraSearch(object):
         else:
             return requests.get(url, params=params, auth=self.auth, headers=headers, verify=(not self.no_verify_ssl))
 
+    def get_issues_with_labels(self, labels_to_find):
+        issues = []
+        if labels_to_find:
+            response = self.query('labels in ({labels})'.format(labels=','.join('"' + item + '"' for item in labels_to_find)))
+            issues = [item['key'] for item in response]
+        return issues
+
+
     def get_labels(self, labels_to_find):
         labels = []
         if labels_to_find:
@@ -170,7 +178,7 @@ class JiraSearch(object):
                 payload = response.json()
                 # use 'all' below to AND the labels_to_find (has to match each of the find terms)
                 # use 'any' below to OR the labels_to_find (has to match at least one find term)
-                new_labels = [label for label in payload['values'] if all(sub in label for sub in labels_to_find)]
+                new_labels = [label for label in payload['values'] if any(sub in label for sub in labels_to_find)]
                 if new_labels:
                     labels = labels + new_labels
                 start_at = start_at + len(payload['values'])
@@ -269,6 +277,13 @@ def build_graph_data(graph,
         issue_type = fields['issuetype']['name']
         return issue_type
 
+    def get_team_name(fields):
+        key = 'Team Name'
+        try:
+            return fields[key][0]['value']
+        except (KeyError, ValueError, TypeError):
+            return None
+    
     def get_node_shape(issue_key, fields, default_shape='rect'):
         shapes = {
             "Epic": "oval", #"diamond",
@@ -276,7 +291,7 @@ def build_graph_data(graph,
             "Spike": default_shape,
             "subtask": "text", #"oval",
             "Task": "MCircle",
-            "Certified": "octagon"
+            "Certified": "box3d"
         }
 
         issue_type = get_issue_type(fields)
@@ -295,7 +310,7 @@ def build_graph_data(graph,
             # -- otherwise the truncated label would be taking more space than the original.
             if len(summary) > MAX_SUMMARY_LENGTH + 2:
                 summary = summary[:MAX_SUMMARY_LENGTH] + '...'
-        summary = summary.replace('"', '\"')
+        summary = summary.replace('"', "'")
         return summary
 
     def create_node_identifier(issue_key, fields):
@@ -311,7 +326,7 @@ def build_graph_data(graph,
             # -- otherwise the truncated label would be taking more space than the original.
             if len(summary) > MAX_SUMMARY_LENGTH + 2:
                 summary = summary[:MAX_SUMMARY_LENGTH] + '...'
-        summary = summary.replace('"', '\\"')
+        summary = summary.replace('"', "'")
 
         identifier = '{}\\n({})'.format(issue_name, summary)
         return identifier
@@ -350,6 +365,9 @@ def build_graph_data(graph,
         node_identifier = create_node_identifier(issue_key, fields)
         status = fields['status']
         extras = get_extra_decorations_for_status(status)
+        team_name = get_team_name(fields)
+        if team_name:
+            extras = ', xlabel="{}" {} '.format(team_name, extras)
         return '"{}" [shape="{}", href="{}", fillcolor="{}", style=filled {}]'.format(node_identifier, 
                                                                                             issue_shape, 
                                                                                             jira.get_issue_uri(issue_key), 
@@ -363,7 +381,19 @@ def build_graph_data(graph,
             if jira_options.verbose:
                 log('Issue ' + issue_key + ' - should be ignored')
             return True
+        if should_ignore_issue_due_to_state(issue):
+            return True
+
         return False
+
+    def should_ignore_issue_due_to_state(issue):
+        if jira_options.ignore_states and (issue['fields']['status']['name'] in jira_options.ignore_states):
+            issue_key = get_key(issue)
+            if jira_options.verbose:
+                log('Skipping ' + issue_key + ' - state is one of ' + ','.join(jira_options.ignore_states))
+            return True
+        return False
+
 
     def process_link(fields, issue_key, link):
         if 'outwardIssue' in link:
@@ -381,8 +411,6 @@ def build_graph_data(graph,
         linked_issue = link[link_issue_direction]
         linked_issue_key = get_key(linked_issue)
         if should_ignore_issue(linked_issue):
-            if jira_options.verbose:
-                log('Skipping ' + linked_issue_key + ' - explicitly excluded')
             return
 
         link_type = link['type'][direction]
@@ -501,12 +529,13 @@ def build_graph_data(graph,
         return graph
 
 
+
     project_prefix = start_issue_key.split('-', 1)[0]
     return walk(start_issue_key, graph)
 
 
 
-def parse_args():
+def parse_args(arg_list = []):
     parser = argparse.ArgumentParser(conflict_handler='resolve')
     parser.add_argument('-u', '--user', dest='user', default=None, help='Username to access JIRA')
     parser.add_argument('-p', '--password', dest='password', default=None, help='Password to access JIRA')
@@ -519,8 +548,8 @@ def parse_args():
     parser.add_argument('-ll', '--link-label', dest='link_labels', default=[], action='append', help='Provide labels for this type of relationship, such as "blocks"')
     parser.add_argument('-it', '--ignore-type', dest='ignore_types', action='append', default=[], help='Ignore issues of this type')
     parser.add_argument('-is', '--ignore-state', dest='ignore_states', action='append', default=[], help='Ignore issues with this state')
-    parser.add_argument('-i', '--issue-include', dest='includes', default='', help='Include issue keys')
-    parser.add_argument('-xi', '--issue-exclude', dest='issue_excludes', action='append', default=[], help='Exclude issue keys; can be repeated for multiple issues')
+    parser.add_argument('-pi', '--project-include', dest='includes', default='', help='Include project keys')
+    parser.add_argument('-px', '--project-exclude', dest='issue_excludes', action='append', default=[], help='Exclude these project keys; can be repeated for multiple issues')
     parser.add_argument('-s', '--show-directions', dest='show_directions', default=['inward', 'outward'], help='which directions to show (inward, outward)')
     parser.add_argument('-d', '--directions', dest='directions', default=['inward', 'outward'], help='which directions to walk (inward, outward)')
     parser.add_argument('-ns', '--node-shape', dest='node_shape', default='box', help='which shape to use for nodes (circle, box, ellipse, etc)')
@@ -535,40 +564,14 @@ def parse_args():
     parser.add_argument('--no-verify-ssl', dest='no_verify_ssl', default=False, action='store_true', help='Don\'t verify SSL certs for requests')
     parser.add_argument('issues', nargs='+', help='The issue key (e.g. JRADEV-1107, JRADEV-1391)')
 
-    return parser.parse_args([
-        '--user', 'gtempel@billtrust.com',
-        '--password', 'QZ12rb4a5VEyBPwwOxZS8C27',
-        '--jira', 'https://billtrust.atlassian.net',
-        '--ignore-state', 'Closed',
-        '--ignore-state', 'Done',
-        '--ignore-state', 'Deployed',
-        '--ignore-state', 'Completed',
-        '--ignore-state', 'Rolled',
-        '--exclude-link', 'clones',
-        '--exclude-link', 'is cloned by',
-        '--exclude-link', 'is blocked by',
-        '--exclude-link', 'is related to',
-        # '--link-label', 'blocks',
-        #'--issue-include', 'ARC',
-        #'--ignore-type', 'Certified',
-        '--ignore-type', 'Bug',
-        '--ignore-type', 'Test',
-        '--ignore-subtasks', 
-        '--add-field', 'Epic Link',
-        '--add-field', 'labels',
-        # '--label', 'B&P',
-        # '--verbose', 
-        '--blockers',
-        # 'ARC-5360'
-        'CERT-1070', 'CERT-929', 'CERT-803'
-        ]
-    )
+    return parser.parse_args(arg_list)
 
 
 
 
-def main():
-    options = parse_args()
+def main(arg_list = []):
+
+    options = parse_args(arg_list)
 
     if options.cookie is not None:
         # Log in with browser and use --cookie=ABCDEF012345 commandline argument
@@ -586,9 +589,15 @@ def main():
 
     jira_options = JiraOptions(vars(options))
 
-    labels = jira.get_labels(jira_options.labels)
-    if labels and jira_options.verbose:
-        print(labels)
+    # labels = jira.get_labels(jira_options.labels)
+    # if labels and jira_options.verbose:
+    #     print(labels)
+
+    cases = jira.get_issues_with_labels(jira_options.labels)
+    print(cases)
+
+    if cases:
+        jira_options.issues = filter(None, jira_options.issues + cases)
 
     for issue in jira_options.issues:
         build_graph_data(graph, issue, jira, jira_options)
@@ -603,4 +612,57 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    arg_list = [
+        '--user', 'gtempel@billtrust.com',
+        '--password', 'QZ12rb4a5VEyBPwwOxZS8C27',
+        '--jira', 'https://billtrust.atlassian.net',
+        '--ignore-state', 'Closed',
+        '--ignore-state', 'Done',
+        '--ignore-state', 'Deployed',
+        '--ignore-state', 'Completed',
+        '--ignore-state', 'Rolled',
+        '--exclude-link', 'clones',
+        '--exclude-link', 'is cloned by',
+        '--exclude-link', 'is blocked by',
+        '--exclude-link', 'is related to',
+        # '--link-label', 'blocks',
+        #'--project-include', 'ARC',
+        #'--ignore-type', 'Certified',
+        '--ignore-type', 'Bug',
+        '--ignore-type', 'Test',
+        '--ignore-subtasks', 
+        '--add-field', 'Epic Link',
+        '--add-field', 'labels',
+        '--add-field', 'Team',
+        '--add-field', 'Team Name',
+        # '--label', 'B&P_Ingestion_Agilicats_Core',
+        # '--label', 'RS-BnpIngest-Biscuit',
+        # '--label', 'B&P_Ingestion_Create_Import_Batch',
+        # '--label', 'B&P_Ingestion_Historical_Document_History',
+        # '--label', 'B&P_Ingestion_Electronic_Document_History',
+        # '--label', 'RS-BnpIngest-Worker',
+        # '--label', 'B&P_Ingestion_PDF_Processing',
+        # '--label', 'B&P_Ingestion_Postal_Document_History',
+        # '--label', 'B&P_Ingestion_Batch_Monitoring',
+        # '--label', 'B&P_Ingestion_Prod_Readiness',
+        # '--label', 'B&P_Ingestion_Customer_Testing',
+        # '--label', 'B&P_Ingestion_Batch_Ingestion',
+        # '--label', 'B&P_Ingestion_Historical_Batch_Ingestion',
+        # '--label', 'B&P_Ingestion_Batch_Ingestion_Load_Testing',
+        # '--label', 'B&P_Dev_Load_Testing',
+        # '--label', 'B&P_Manual_Customer_Testing',
+        '--label', 'colonial',
+        #'--verbose', 
+        '--blockers',
+        #'--local',
+        # 'ARC-5360'
+        # 'CERT-1070', 'CERT-929', 'CERT-803',
+        # 'CERT-1610'
+        # 'CERT-1655',
+        'ARC-4982',
+        'ARC-5658',
+        'ARC-5168',
+        'ARC-5420',
+        ''
+        ]
+    main(arg_list)
