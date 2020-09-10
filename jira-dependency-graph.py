@@ -51,9 +51,9 @@ class JiraGraph(object):
 
         nodes = ';\n'.join(self.__graph_data['nodes'])
         links = ';\n'.join(self.__graph_data['links'])
-        graph = nodes + ';\n' + links
+        graph = '\n// Nodes:\n' + nodes + ';\n// Links:\n' + links
 
-        digraph = "digraph{{\n{node_defaults}\n{graph_defaults}\n{graph}\n{blockers}\n}}".format(node_defaults=node_defaults,
+        digraph = "digraph{{\n{node_defaults}\n{graph_defaults}\n// Graph starts here\n{graph}\n// These items are blocked\n{blockers}\n}}".format(node_defaults=node_defaults,
                                                                                             graph_defaults=graph_defaults,
                                                                                             graph=graph,
                                                                                             blockers=blockers)
@@ -197,7 +197,9 @@ class JiraSearch(object):
         fields = issue['fields']
 
         for k, v in self.__fields_to_map.items():
-            fields[v] = fields[k]
+            if k in fields.keys():
+                fields[v] = fields[k] 
+
 
         for k in self.__fields_to_map.keys():
             fields.pop(k, None)
@@ -284,6 +286,23 @@ def build_graph_data(graph,
         except (KeyError, ValueError, TypeError):
             return None
     
+    def get_sprint(fields):
+        key = 'Sprint'
+        try:
+            return fields[key][0]['name']
+        except (KeyError, ValueError, TypeError):
+            return None
+    
+    def get_cab_datetime(fields):
+        key = 'Implementation Date/Time'
+        try:
+            datetime = fields[key]
+            datetime = datetime.split('T', 1)
+            return datetime[0]
+        except (KeyError, ValueError, TypeError, AttributeError):
+            return None
+    
+
     def get_node_shape(issue_key, fields, default_shape='rect'):
         shapes = {
             "Epic": "oval", #"diamond",
@@ -349,9 +368,19 @@ def build_graph_data(graph,
         return 'BLOCK' in text
 
     def add_block(issue_key, fields):
-        node_identifier = create_node_identifier(issue_key, fields)
+        # node_identifier = create_node_identifier(issue_key, fields)
+        node_identifier = create_node_name(issue_key, fields)
         node = '"{}" [color=red, penwidth=2]'.format(node_identifier)
         graph.add_to_blockers(node)
+
+    def create_annotation(issue_key, fields):
+        annotations = [
+            get_team_name(fields),
+            get_sprint(fields),
+            get_cab_datetime(fields)
+        ]
+        annotations = '; '.join([x for x in annotations if x is not None])
+        return annotations
 
     def create_node_text(issue_key, fields, islink=True):
         default_shape = 'rect'
@@ -365,10 +394,11 @@ def build_graph_data(graph,
         node_identifier = create_node_identifier(issue_key, fields)
         status = fields['status']
         extras = get_extra_decorations_for_status(status)
-        team_name = get_team_name(fields)
-        if team_name:
-            extras = ', xlabel="{}" {} '.format(team_name, extras)
-        return '"{}" [shape="{}", href="{}", fillcolor="{}", style=filled {}]'.format(node_identifier, 
+        annotations = create_annotation(issue_key, fields)
+        if annotations:
+            extras = ', xlabel="{}" {} '.format(annotations, extras)
+        return '"{}" [label="{}", shape="{}", href="{}", fillcolor="{}", style=filled {}]'.format(issue_name, 
+                                                                                            node_identifier,
                                                                                             issue_shape, 
                                                                                             jira.get_issue_uri(issue_key), 
                                                                                             get_status_color(status),
@@ -436,9 +466,11 @@ def build_graph_data(graph,
         else:
             if jira_options.verbose:
                 log(create_node_name(issue_key, fields))
-            edge_definition = '{}->{}[label="{}"{}]'.format(
-                create_node_text(issue_key, fields),
-                create_node_text(linked_issue_key, linked_issue['fields']),
+            edge_definition = '"{}"->"{}"[label="{}"{}]'.format(
+                # create_node_text(issue_key, fields),
+                # create_node_text(linked_issue_key, linked_issue['fields']),
+                create_node_name(issue_key, fields),
+                create_node_name(linked_issue_key, linked_issue['fields']),
                 link_type if link_type in jira_options.link_labels else '',
                 extra)
             if jira_options.blockers and is_a_block(link_type):
@@ -489,9 +521,11 @@ def build_graph_data(graph,
                         subtask_key = get_key(subtask)
                         if jira_options.verbose:
                             log(subtask_key + ' => references => ' + issue_name)
-                        link_text = '{}->{}[color=orange]'.format(
-                            create_node_text(issue_key, fields),
-                            create_node_text(subtask_key, subtask['fields']))
+                        link_text = '"{}"->"{}"[color=orange]'.format(
+                            # create_node_text(issue_key, fields),
+                            # create_node_text(subtask_key, subtask['fields']))
+                            create_node_name(issue_key, fields),
+                            create_node_name(subtask_key, subtask['fields']))
                         add_link_to_graph(graph, link_text)
                         children.append(subtask_key)
             if 'subtasks' in fields and not jira_options.ignore_subtasks:
@@ -501,9 +535,11 @@ def build_graph_data(graph,
                         subtask_name = create_node_name(subtask_key, subtask['fields'])
                         if jira_options.verbose:
                             log(issue_name + ' => has subtask => ' + subtask_name)
-                        link_text = '{}->{}[color=blue][label="subtask"]'.format (
-                                create_node_text(issue_key, fields),
-                                create_node_text(subtask_key, subtask['fields']))
+                        link_text = '"{}"->"{}"[color=blue][label="subtask"]'.format (
+                                # create_node_text(issue_key, fields),
+                                # create_node_text(subtask_key, subtask['fields']))
+                                create_node_name(issue_key, fields),
+                                create_node_name(subtask_key, subtask['fields']))
                         add_link_to_graph(graph, link_text)
                         children.append(subtask_key)
 
@@ -619,6 +655,8 @@ if __name__ == '__main__':
         '--ignore-state', 'Closed',
         '--ignore-state', 'Done',
         '--ignore-state', 'Deployed',
+        '--ignore-state', 'Not Deployed',
+        # '--ignore-state', "Won't Do",
         '--ignore-state', 'Completed',
         '--ignore-state', 'Rolled',
         '--exclude-link', 'clones',
@@ -630,11 +668,13 @@ if __name__ == '__main__':
         #'--ignore-type', 'Certified',
         '--ignore-type', 'Bug',
         '--ignore-type', 'Test',
-        '--ignore-subtasks', 
+        # '--ignore-subtasks', 
         '--add-field', 'Epic Link',
         '--add-field', 'labels',
         '--add-field', 'Team',
         '--add-field', 'Team Name',
+        '--add-field', 'Implementation Date/Time',
+        '--add-field', 'Sprint',
         # '--label', 'B&P_Ingestion_Agilicats_Core',
         # '--label', 'RS-BnpIngest-Biscuit',
         # '--label', 'B&P_Ingestion_Create_Import_Batch',
