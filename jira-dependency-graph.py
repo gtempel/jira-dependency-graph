@@ -23,10 +23,12 @@ class JiraGraph(object):
     """
     __graph_data = { 'nodes': set(), 'links': set() }
     __seen = set()
-    __blockers = set()
+    __blocked = set()
 
     def add_issue_node(self, node):
         self.__graph_data['nodes'].add(node)
+        if node.blocked():
+            self.add_blocked_node(node)
     
     def add_link_node(self, node):
         self.__graph_data['links'].add(node)
@@ -37,8 +39,8 @@ class JiraGraph(object):
     def has_seen(self, issue_key):
         return issue_key in self.__seen
 
-    def add_to_blockers(self, node):
-        self.__blockers.add(node)
+    def add_blocked_node(self, node):
+        self.__blocked.add(node)
 
     def generate_digraph(self, default_node_shape):
         """
@@ -47,9 +49,9 @@ class JiraGraph(object):
         """
         graph_defaults = 'graph [rankdir=LR];' # splines=ortho
         node_defaults = 'node [fontname=Helvetica, shape=' + default_node_shape +'];'
-        blockers = ';\n'.join(self.__blockers)
 
-        nodes = ';\n'.join(self.__graph_data['nodes'])
+        blockers = ';\n'.join(['"{}" [color=red, penwidth=2]'.format(node.create_node_name()) for node in self.__blocked if node.blocked()])
+        nodes = ';\n'.join([node.create_node_text() for node in self.__graph_data['nodes']])
         links = ';\n'.join(self.__graph_data['links'])
         graph = '\n// Nodes:\n' + nodes + ';\n// Links:\n' + links
 
@@ -94,13 +96,6 @@ class JiraGraphRenderer(object):
             image.close()
         return filename
 
-    # do we really need this?
-    # def filter_duplicates(self, lst):
-    #     # Enumerate the list to restore order lately; reduce the sorted list; restore order
-    #     def append_unique(acc, item):
-    #         return acc if acc[-1][1] == item[1] else acc.append(item) or acc
-    #     srt_enum = sorted(enumerate(lst), key=lambda i_val: i_val[1])
-    #     return [item[1] for item in sorted(reduce(append_unique, srt_enum, [srt_enum[0]]))]
 
 class JiraSearch(object):
     """ This factory will create the actual method used to fetch issues from JIRA. This is really just a closure that
@@ -165,7 +160,6 @@ class JiraSearch(object):
             issues = [item['key'] for item in response]
         return issues
 
-
     def get_labels(self, labels_to_find):
         labels = []
         if labels_to_find:
@@ -206,7 +200,6 @@ class JiraSearch(object):
         
         return fields
 
-
     def get_issue(self, key):
         """ Given an issue key (i.e. JRA-9) return the JSON representation of it. This is the only place where we deal
             with JIRA's REST API. """
@@ -242,19 +235,41 @@ class JiraOptions(object):
         self.__dict__.update(kwargs)
 
 
-def build_graph_data(graph,
-                     start_issue_key, 
-                     jira, 
-                     jira_options):
-                     
-    """ Given a starting image key and the issue-fetching function build up the GraphViz data representing relationships
-        between issues. This will consider both subtasks and issue links, among other things, as per the jira_options.
-    """
+class JiraNode(object):
+    __fields = {}
+    __key = None
+    __blocked = False
+    __uri = None
 
-    def get_key(issue):
-        return issue['key']
+    def __init__(self, issue_key = None, fields = {}, uri = None):
+        self.__key = issue_key
+        self.__fields = fields
+        self.__uri = uri # jira.get_issue_uri(issue_key)
+        self.__blocked = 'BLOCK' in self.get_status_text()
 
-    def get_status_color(status_field):
+    def get_key(self):
+        return self.__key
+
+    def get_fields(self):
+        return self.__fields
+
+    def block(self, block_or_blocked = False):
+        self.__blocked |= block_or_blocked
+        return self.blocked()
+
+    def blocked(self):
+        return self.__blocked
+
+    def get_status(self):
+        return self.__fields['status']
+
+    def get_status_text(self):
+        return self.get_status()['statusCategory']['name'].upper()
+
+    def is_status_ignore(self, ignore_states = []):
+        return self.get_status_text() in ignore_states
+
+    def get_status_color(self):
         default_color = 'white'
         colors = {
             'IN PROGRESS': 'yellow',
@@ -262,48 +277,45 @@ def build_graph_data(graph,
             'BLOCKED': 'red',
             'BLOCKS' : 'red'
         }
-        status = status_field['statusCategory']['name'].upper()
+        status = self.get_status_text()
         color = colors.get(status, default_color)
         return color
 
-    def get_extra_decorations_for_link_type(link_type):
-        extra = ',color="red", penwidth=4.0' if link_type == "blocks" else ""
-        return extra
+    def get_extra_decorations_for_status(self):
+        return ''
 
-    def get_extra_decorations_for_status(status_field):
-        status = status_field['name'].upper()
-        extra = ',color="red", penwidth=4.0' if is_a_block(status) else ''
-        return extra
+    def is_epic(self):
+        return self.get_issue_type() == 'Epic'
 
-    def get_issue_type(fields):
-        issue_type = fields['issuetype']['name']
+    def get_issue_type(self):
+        issue_type = self.__fields['issuetype']['name']
         return issue_type
 
-    def get_team_name(fields):
+    def get_team_name(self):
         key = 'Team Name'
         try:
-            return fields[key][0]['value']
+            return self.__fields[key][0]['value']
         except (KeyError, ValueError, TypeError):
             return None
     
-    def get_sprint(fields):
+    def get_sprint(self):
         key = 'Sprint'
         try:
-            return fields[key][0]['name']
+            return self.__fields[key][0]['name']
         except (KeyError, ValueError, TypeError):
             return None
     
-    def get_cab_datetime(fields):
+    def get_cab_datetime(self):
         key = 'Implementation Date/Time'
         try:
-            datetime = fields[key]
+            datetime = self.__fields[key]
             datetime = datetime.split('T', 1)
             return datetime[0]
         except (KeyError, ValueError, TypeError, AttributeError):
             return None
     
-
-    def get_node_shape(issue_key, fields, default_shape='rect'):
+    def get_node_shape(self):
+        default_shape='rect'
         shapes = {
             "Epic": "oval", #"diamond",
             "Story": default_shape,
@@ -313,44 +325,19 @@ def build_graph_data(graph,
             "Certified": "box3d"
         }
 
-        issue_type = get_issue_type(fields)
+        issue_type = self.get_issue_type()
         shape = shapes.get(issue_type, default_shape)
         return shape
 
-    def get_node_summary(issue_key, fields):
-        summary = fields['summary']
+    def get_subtasks(self):
+        key = 'subtasks'
+        return self.__fields[key] if key in self.__fields else []
 
-        if jira_options.word_wrap == True:
-            if len(summary) > MAX_SUMMARY_LENGTH:
-                # split the summary into multiple lines adding a \n to each line
-                summary = textwrap.fill(summary, MAX_SUMMARY_LENGTH)
-        else:
-            # truncate long labels with "...", but only if the three dots are replacing more than two characters
-            # -- otherwise the truncated label would be taking more space than the original.
-            if len(summary) > MAX_SUMMARY_LENGTH + 2:
-                summary = summary[:MAX_SUMMARY_LENGTH] + '...'
-        summary = summary.replace('"', "'")
-        return summary
+    def get_issue_links(self):
+        key = 'issuelinks'
+        return self.__fields[key] if key in self.__fields else []
 
-    def create_node_identifier(issue_key, fields):
-        issue_name = create_node_name(issue_key, fields)
-        summary = get_node_summary(issue_key, fields)
-
-        if jira_options.word_wrap == True:
-            if len(summary) > MAX_SUMMARY_LENGTH:
-                # split the summary into multiple lines adding a \n to each line
-                summary = textwrap.fill(summary, MAX_SUMMARY_LENGTH)
-        else:
-            # truncate long labels with "...", but only if the three dots are replacing more than two characters
-            # -- otherwise the truncated label would be taking more space than the original.
-            if len(summary) > MAX_SUMMARY_LENGTH + 2:
-                summary = summary[:MAX_SUMMARY_LENGTH] + '...'
-        summary = summary.replace('"', "'")
-
-        identifier = '{}\\n({})'.format(issue_name, summary)
-        return identifier
-
-    def create_node_name(issue_key, fields):
+    def create_node_name(self):
         no_issue_type_prefixes = [
             'Story',
             'Certified',
@@ -358,74 +345,82 @@ def build_graph_data(graph,
             'ACL (Access Control Language)'
         ]
         
-        issue_type = get_issue_type(fields)
+        issue_type = self.get_issue_type()
         if issue_type in no_issue_type_prefixes:
-            return issue_key
-        return '{} {}'.format(issue_type, issue_key)
+            return self.get_key()
+        return '{} {}'.format(issue_type, self.get_key())
 
-    def is_a_block(text):
-        text = text.strip().upper()
-        return 'BLOCK' in text
 
-    def add_block(issue_key, fields):
-        # node_identifier = create_node_identifier(issue_key, fields)
-        node_identifier = create_node_name(issue_key, fields)
-        node = '"{}" [color=red, penwidth=2]'.format(node_identifier)
-        graph.add_to_blockers(node)
+    def create_node_description(self):
+        parts = [ self.create_node_name(),
+                self.get_team_name(),
+                self.get_sprint(),
+                self.get_cab_datetime(),
+                self.get_node_summary()
+                ]
+        description = '\\n'.join([x for x in parts if x is not None])
+        return description
+    
+    def get_node_summary(self):
+        summary = self.__fields['summary']
 
-    def create_annotation(issue_key, fields):
-        annotations = [
-            get_team_name(fields),
-            get_sprint(fields),
-            get_cab_datetime(fields)
-        ]
-        annotations = '; '.join([x for x in annotations if x is not None])
-        return annotations
+        # truncate long labels with "...", but only if the three dots are replacing more than two characters
+        # -- otherwise the truncated label would be taking more space than the original.
+        if len(summary) > MAX_SUMMARY_LENGTH + 2:
+            summary = summary[:MAX_SUMMARY_LENGTH] + '...'
+        summary = summary.replace('"', "'")
+        return summary
 
-    def create_node_text(issue_key, fields, islink=True):
-        default_shape = 'rect'
-        issue_shape = get_node_shape(issue_key, fields, default_shape)
-        issue_name = create_node_name(issue_key, fields)
+    def create_node_text(self, islink=False):
+        issue_name = self.create_node_name()
 
         if islink:
-            summary = get_node_summary(issue_key, fields)
+            summary = self.get_node_summary()
             return '"{}\\n({})"'.format(issue_name, summary)
         
-        node_identifier = create_node_identifier(issue_key, fields)
-        status = fields['status']
-        extras = get_extra_decorations_for_status(status)
-        annotations = create_annotation(issue_key, fields)
-        if annotations:
-            extras = ', xlabel="{}" {} '.format(annotations, extras)
         return '"{}" [label="{}", shape="{}", href="{}", fillcolor="{}", style=filled {}]'.format(issue_name, 
-                                                                                            node_identifier,
-                                                                                            issue_shape, 
-                                                                                            jira.get_issue_uri(issue_key), 
-                                                                                            get_status_color(status),
-                                                                                            extras)
+                                                                                            self.create_node_description(),
+                                                                                            self.get_node_shape(), 
+                                                                                            self.__uri, 
+                                                                                            self.get_status_color(),
+                                                                                            self.get_extra_decorations_for_status())
 
-    def should_ignore_issue(issue):
-        issue_key = get_key(issue)
-        issue_type = get_issue_type(issue['fields'])
+
+def build_graph_data(graph,
+                     start_issue_key, 
+                     jira, 
+                     jira_options):
+                     
+    """ Given a starting image key and the issue-fetching function build up the GraphViz data representing relationships
+        between issues. This will consider both subtasks and issue links, among other things, as per the jira_options.
+    """
+
+
+    def get_extra_decorations_for_link_type(link_type):
+        extra = ',color="red", penwidth=4.0' if 'BLOCK' in link_type.upper() else ""
+        return extra
+
+    def should_ignore_issue(node):
+        issue_key = node.get_key()
+        issue_type = node.get_issue_type()
         if (jira_options.issue_excludes and (issue_key in jira_options.issue_excludes)) or (jira_options.ignore_types and (issue_type in jira_options.ignore_types)):
-            if jira_options.verbose:
-                log('Issue ' + issue_key + ' - should be ignored')
+            if jira_options.verbose: log('Issue ' + issue_key + ' - should be ignored')
             return True
-        if should_ignore_issue_due_to_state(issue):
+        if should_ignore_issue_due_to_state(node):
             return True
 
         return False
 
-    def should_ignore_issue_due_to_state(issue):
-        if jira_options.ignore_states and (issue['fields']['status']['name'] in jira_options.ignore_states):
-            issue_key = get_key(issue)
-            if jira_options.verbose:
-                log('Skipping ' + issue_key + ' - state is one of ' + ','.join(jira_options.ignore_states))
+
+    def should_ignore_issue_due_to_state(node):
+        if node.is_status_ignore(jira_options.ignore_states):
+            issue_key = node.get_key()
+            if jira_options.verbose: log('Skipping ' + issue_key + ' - state is one of ' + ','.join(jira_options.ignore_states))
             return True
         return False
 
 
-    def process_link(fields, issue_key, link):
+    def process_link(node, link):
         if 'outwardIssue' in link:
             direction = 'outward'
         elif 'inwardIssue' in link:
@@ -436,18 +431,16 @@ def build_graph_data(graph,
         if direction not in jira_options.directions:
             return
 
-
         link_issue_direction = direction + 'Issue'
         linked_issue = link[link_issue_direction]
-        linked_issue_key = get_key(linked_issue)
-        if should_ignore_issue(linked_issue):
+        linked_node = JiraNode(linked_issue['key'], link[link_issue_direction]['fields'], jira.get_issue_uri(linked_issue['key']))
+        linked_issue_key = linked_node.get_key()
+        if should_ignore_issue(linked_node):
             return
 
         link_type = link['type'][direction]
 
         if jira_options.ignore_states and link_issue_direction and (link[link_issue_direction]['fields']['status']['name'] in jira_options.ignore_states):
-            if jira_options.verbose:
-                log('Skipping ' + link_issue_direction + ' ' + linked_issue_key + ' - linked key is Closed')
             return
 
         if jira_options.includes not in linked_issue_key:
@@ -457,104 +450,93 @@ def build_graph_data(graph,
             return linked_issue_key, None
 
         arrow = ' => ' if direction == 'outward' else ' <= '
-        if jira_options.verbose:
-            log(issue_key + arrow + link_type + arrow + linked_issue_key)
+        if jira_options.verbose: log(node.get_key() + arrow + link_type + arrow + linked_issue_key)
 
         extra = get_extra_decorations_for_link_type(link_type)
         if direction not in jira_options.show_directions:
             edge_definition = None
         else:
-            if jira_options.verbose:
-                log(create_node_name(issue_key, fields))
+            if jira_options.verbose: log(node.create_node_name())
             edge_definition = '"{}"->"{}"[label="{}"{}]'.format(
-                # create_node_text(issue_key, fields),
-                # create_node_text(linked_issue_key, linked_issue['fields']),
-                create_node_name(issue_key, fields),
-                create_node_name(linked_issue_key, linked_issue['fields']),
+                node.create_node_name(),
+                linked_node.create_node_name(),
                 link_type if link_type in jira_options.link_labels else '',
                 extra)
-            if jira_options.blockers and is_a_block(link_type):
-                add_block(issue_key, fields)
-                add_block(linked_issue_key, linked_issue['fields'])
+        blocked = 'BLOCK' in link_type.upper()
+        if blocked:
+            node.block(blocked)
+            linked_node.block(blocked)
+            graph.add_blocked_node(node)
+            graph.add_blocked_node(linked_node)
 
         return linked_issue_key, edge_definition
 
-    def add_node_to_graph(graph, issue_key, fields, islink = False):
-        node_text = create_node_text(issue_key, fields, islink=False)
+    def add_node_to_graph(graph, node, islink = False):
         if islink:
+            node_text = node.create_node_text(islink=False)
             add_link_to_graph(graph, node_text)
         else:
-            graph.add_issue_node(node_text)
-        return node_text
+            graph.add_issue_node(node)
+        
+        return
 
     def add_link_to_graph(graph, line_definition):
         graph.add_link_node(line_definition)
         return line_definition
 
-    def walk(issue_key, graph):
+    def get_node(issue_key):
         fields = jira.get_mapped_issue_fields(issue_key)
-
+        node = JiraNode(issue_key, fields, jira.get_issue_uri(issue_key) )
+        return node
+    
+    def walk(issue_key, graph):
+        node = get_node(issue_key)
         graph.mark_as_seen(issue_key)
 
         children = []
 
-        if jira_options.ignore_states and (fields['status']['name'] in jira_options.ignore_states):
-            if jira_options.verbose:
-                log('Skipping ' + issue_key + ' - state is one of ' + ','.join(jira_options.ignore_states))
+        if node.is_status_ignore(jira_options.ignore_states):
+            if jira_options.verbose: log('Skipping ' + issue_key + ' - state is one of ' + ','.join(jira_options.ignore_states))
             return graph
 
         if not jira_options.traverse and ((project_prefix + '-') not in issue_key):
-            if jira_options.verbose:
-                log('Skipping ' + issue_key + ' - not traversing to a different project')
+            if jira_options.verbose: log('Skipping ' + issue_key + ' - not traversing to a different project')
             return graph
 
-        add_node_to_graph(graph, issue_key, fields, islink = False)
+        add_node_to_graph(graph, node, islink = False)
 
-        issue_type = get_issue_type(fields)
-        issue_name = create_node_name(issue_key, fields)
+        issues = jira.query('"Epic Link" = "%s"' % issue_key) if node.is_epic() and not jira_options.ignore_epic else []
+        for subtask in issues:
+            subtask_node = JiraNode(subtask['key'], subtask['fields'], jira.get_issue_uri(subtask['key']))
+            if not should_ignore_issue(subtask_node):
+                link_text = '"{}"->"{}"[color=orange]'.format(
+                    node.create_node_name(),
+                    subtask_node.create_node_name())
+                add_link_to_graph(graph, link_text)
+                children.append(subtask_node.get_key())
 
-        if True: #not ignore_subtasks:
-            if issue_type == 'Epic' and not jira_options.ignore_epic:
-                issues = jira.query('"Epic Link" = "%s"' % issue_key)
-                for subtask in issues:
-                    if not should_ignore_issue(subtask):
-                        subtask_key = get_key(subtask)
-                        if jira_options.verbose:
-                            log(subtask_key + ' => references => ' + issue_name)
-                        link_text = '"{}"->"{}"[color=orange]'.format(
-                            # create_node_text(issue_key, fields),
-                            # create_node_text(subtask_key, subtask['fields']))
-                            create_node_name(issue_key, fields),
-                            create_node_name(subtask_key, subtask['fields']))
-                        add_link_to_graph(graph, link_text)
-                        children.append(subtask_key)
-            if 'subtasks' in fields and not jira_options.ignore_subtasks:
-                for subtask in fields['subtasks']:
-                    if not should_ignore_issue(subtask):
-                        subtask_key = get_key(subtask)
-                        subtask_name = create_node_name(subtask_key, subtask['fields'])
-                        if jira_options.verbose:
-                            log(issue_name + ' => has subtask => ' + subtask_name)
-                        link_text = '"{}"->"{}"[color=blue][label="subtask"]'.format (
-                                # create_node_text(issue_key, fields),
-                                # create_node_text(subtask_key, subtask['fields']))
-                                create_node_name(issue_key, fields),
-                                create_node_name(subtask_key, subtask['fields']))
-                        add_link_to_graph(graph, link_text)
-                        children.append(subtask_key)
+        subtasks = [] if jira_options.ignore_subtasks else node.get_subtasks()
+        for subtask in subtasks:
+            subtask_node = JiraNode(subtask['key'], subtask['fields'], jira.get_issue_uri(subtask['key']))
+            if not should_ignore_issue(subtask_node):
+                subtask_name = subtask_node.create_node_name()
+                link_text = '"{}"->"{}"[color=blue][label="subtask"]'.format (
+                    node.create_node_name(),
+                    subtask_node.create_node_name())
+                add_link_to_graph(graph, link_text)
+                children.append(subtask_node.get_key())
 
-        if 'issuelinks' in fields:
-            for other_link in fields['issuelinks']:
-                # conditionally generate the link between issue_key and the other_link
-                # this will be an edge or directed-line in the visualization, and does
-                # not define the nodes in question
-                result = process_link(fields, issue_key, other_link)
-                if result is not None:
-                    if jira_options.verbose:
-                        log('Appending ' + result[0])
-                    children.append(result[0])
-                    if result[1] is not None:
-                        graph.add_link_node(result[1])
+        other_links = node.get_issue_links()
+        for other_link in other_links:
+            # conditionally generate the link between issue_key and the other_link
+            # this will be an edge or directed-line in the visualization, and does
+            # not define the nodes in question
+            result = process_link(node, other_link)
+            if result is not None:
+                if jira_options.verbose: log('Appending ' + result[0])
+                children.append(result[0])
+                if result[1] is not None:
+                    graph.add_link_node(result[1])
     
         # now construct graph data for all children, which could be:
         #   items in the epic
@@ -563,8 +545,6 @@ def build_graph_data(graph,
         for child in (x for x in children if not graph.has_seen(x)):
             walk(child, graph)
         return graph
-
-
 
     project_prefix = start_issue_key.split('-', 1)[0]
     return walk(start_issue_key, graph)
@@ -591,7 +571,6 @@ def parse_args(arg_list = []):
     parser.add_argument('-ns', '--node-shape', dest='node_shape', default='box', help='which shape to use for nodes (circle, box, ellipse, etc)')
     parser.add_argument('-t', '--ignore-subtasks', action='store_true', default=False, help='Don''t include sub-tasks issues')
     parser.add_argument('-T', '--dont-traverse', dest='traverse', action='store_false', default=True, help='Do not traverse to other projects')
-    parser.add_argument('-w', '--word-wrap', dest='word_wrap', default=False, action='store_true', help='Word wrap issue summaries instead of truncating them')
     parser.add_argument('-v', '--verbose', dest='verbose', default=False, action='store_true', help='Verbose logging')
     parser.add_argument('-af', '--add-field', dest='extra_fields', action='append', default=[], help='Include these extra fields from the issues, such as "Epic Link"')
     parser.add_argument('-la', '--label', dest='labels', action='append', default=[], help='Find these labels (ex: "B&P_Ingestion")')
@@ -632,12 +611,14 @@ def main(arg_list = []):
     cases = jira.get_issues_with_labels(jira_options.labels)
     print(cases)
 
+    jira_options.ignore_states = [ state.upper() for state in jira_options.ignore_states ]
+
     if cases:
         jira_options.issues = filter(None, jira_options.issues + cases)
 
     for issue in jira_options.issues:
         build_graph_data(graph, issue, jira, jira_options)
-   
+
     if jira_options.local:
         print(graph.generate_digraph(jira_options.node_shape))
     else:
