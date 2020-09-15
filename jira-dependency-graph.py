@@ -7,6 +7,9 @@ import getpass
 import sys
 import textwrap
 import requests
+import timestring
+from more_itertools import bucket
+
 from functools import reduce
 
 GOOGLE_CHART_URL = 'https://chart.apis.google.com/chart'
@@ -29,7 +32,8 @@ class JiraGraph(object):
         self.__graph_data['nodes'].add(node)
         if node.blocked():
             self.add_blocked_node(node)
-    
+
+
     def add_link_node(self, node):
         self.__graph_data['links'].add(node)
 
@@ -55,10 +59,26 @@ class JiraGraph(object):
         links = ';\n'.join(self.__graph_data['links'])
         graph = '\n// Nodes:\n' + nodes + ';\n// Links:\n' + links
 
-        digraph = "digraph{{\n{node_defaults}\n{graph_defaults}\n// Graph starts here\n{graph}\n// These items are blocked\n{blockers}\n}}".format(node_defaults=node_defaults,
+        # how about ordering/ranking by date? That would entail bucketing the
+        # nodes based on date, ordering those buckets, then emitting
+        # rank groupings for each of those buckets, in order
+        buckets = bucket(self.__graph_data['nodes'], key=lambda x: x.get_date().strftime("%Y%m%d") if x.get_date() else '')
+        bucket_list = sorted(list(buckets))
+        sorted_buckets = sorted(list(buckets))
+        ranks = []
+        nodes = []
+        for k in sorted_buckets:
+            items = [node.create_node_name() for node in list(buckets[k])]
+            ranks.append('{\nrank=same\n"' + '",\n"'.join(items) + '"\n};')
+            # nodes = nodes + [n for n in list(buckets[k])]
+
+        ranks = []
+        nodes = ';\n'.join([node.create_node_text() for node in nodes])
+        digraph = "digraph{{\n{node_defaults}\n{graph_defaults}\n// Graph starts here\n{graph}\n// These items are blocked\n{blockers}\n// Grouped by date\n{ranks}}}".format(node_defaults=node_defaults,
                                                                                             graph_defaults=graph_defaults,
                                                                                             graph=graph,
-                                                                                            blockers=blockers)
+                                                                                            blockers=blockers,
+                                                                                            ranks="\n".join(ranks))
         return digraph
 
 class JiraGraphRenderer(object):
@@ -245,12 +265,12 @@ class JiraNode(object):
         self.__key = issue_key
         self.__fields = fields
         self.__uri = uri # jira.get_issue_uri(issue_key)
-        self.__blocked = 'BLOCK' in self.get_status_text()
+        self.__blocked = 'BLOCK' in self.status_text()
 
-    def get_key(self):
+    def key(self):
         return self.__key
 
-    def get_fields(self):
+    def fields(self):
         return self.__fields
 
     def block(self, block_or_blocked = False):
@@ -260,16 +280,16 @@ class JiraNode(object):
     def blocked(self):
         return self.__blocked
 
-    def get_status(self):
+    def status(self):
         return self.__fields['status']
 
-    def get_status_text(self):
-        return self.get_status()['statusCategory']['name'].upper()
+    def status_text(self):
+        return self.status()['statusCategory']['name'].upper()
 
     def is_status_ignore(self, ignore_states = []):
-        return self.get_status_text() in ignore_states
+        return self.status_text() in ignore_states
 
-    def get_status_color(self):
+    def status_color(self):
         default_color = 'white'
         colors = {
             'IN PROGRESS': 'yellow',
@@ -277,7 +297,7 @@ class JiraNode(object):
             'BLOCKED': 'red',
             'BLOCKS' : 'red'
         }
-        status = self.get_status_text()
+        status = self.status_text()
         color = colors.get(status, default_color)
         return color
 
@@ -285,27 +305,34 @@ class JiraNode(object):
         return ''
 
     def is_epic(self):
-        return self.get_issue_type() == 'Epic'
+        return self.issue_type() == 'Epic'
 
-    def get_issue_type(self):
+    def issue_type(self):
         issue_type = self.__fields['issuetype']['name']
         return issue_type
 
-    def get_team_name(self):
+    def team_name(self):
         key = 'Team Name'
         try:
             return self.__fields[key][0]['value']
         except (KeyError, ValueError, TypeError):
             return None
     
-    def get_sprint(self):
+    def sprint(self):
         key = 'Sprint'
         try:
             return self.__fields[key][0]['name']
         except (KeyError, ValueError, TypeError):
             return None
     
-    def get_cab_datetime(self):
+    def sprint_end_date(self):
+        key = 'Sprint'
+        try:
+            return self.__fields[key][0]['endDate']
+        except (KeyError, ValueError, TypeError):
+            return None
+    
+    def cab_datetime(self):
         key = 'Implementation Date/Time'
         try:
             datetime = self.__fields[key]
@@ -314,7 +341,19 @@ class JiraNode(object):
         except (KeyError, ValueError, TypeError, AttributeError):
             return None
     
-    def get_node_shape(self):
+    def get_date(self):
+        # have to examine either the cab_datetime or the date parsed from the sprint
+        cab_info = self.cab_datetime()
+        sprint_info = self.sprint_end_date()
+
+        if cab_info:
+            return timestring.Date(cab_info).date.date()
+        elif sprint_info:
+            return timestring.Date(sprint_info).date.date()
+        else:
+            return None
+
+    def shape(self):
         default_shape='rect'
         shapes = {
             "Epic": "oval", #"diamond",
@@ -325,7 +364,7 @@ class JiraNode(object):
             "Certified": "box3d"
         }
 
-        issue_type = self.get_issue_type()
+        issue_type = self.issue_type()
         shape = shapes.get(issue_type, default_shape)
         return shape
 
@@ -345,17 +384,17 @@ class JiraNode(object):
             'ACL (Access Control Language)'
         ]
         
-        issue_type = self.get_issue_type()
+        issue_type = self.issue_type()
         if issue_type in no_issue_type_prefixes:
-            return self.get_key()
-        return '{} {}'.format(issue_type, self.get_key())
+            return self.key()
+        return '{} {}'.format(issue_type, self.key())
 
 
     def create_node_description(self):
         parts = [ self.create_node_name(),
-                self.get_team_name(),
-                self.get_sprint(),
-                self.get_cab_datetime(),
+                self.team_name(),
+                self.sprint(),
+                self.cab_datetime(),
                 self.get_node_summary()
                 ]
         description = '\\n'.join([x for x in parts if x is not None])
@@ -380,9 +419,9 @@ class JiraNode(object):
         
         return '"{}" [label="{}", shape="{}", href="{}", fillcolor="{}", style=filled {}]'.format(issue_name, 
                                                                                             self.create_node_description(),
-                                                                                            self.get_node_shape(), 
+                                                                                            self.shape(), 
                                                                                             self.__uri, 
-                                                                                            self.get_status_color(),
+                                                                                            self.status_color(),
                                                                                             self.get_extra_decorations_for_status())
 
 
@@ -401,8 +440,8 @@ def build_graph_data(graph,
         return extra
 
     def should_ignore_issue(node):
-        issue_key = node.get_key()
-        issue_type = node.get_issue_type()
+        issue_key = node.key()
+        issue_type = node.issue_type()
         if (jira_options.issue_excludes and (issue_key in jira_options.issue_excludes)) or (jira_options.ignore_types and (issue_type in jira_options.ignore_types)):
             if jira_options.verbose: log('Issue ' + issue_key + ' - should be ignored')
             return True
@@ -414,7 +453,7 @@ def build_graph_data(graph,
 
     def should_ignore_issue_due_to_state(node):
         if node.is_status_ignore(jira_options.ignore_states):
-            issue_key = node.get_key()
+            issue_key = node.key()
             if jira_options.verbose: log('Skipping ' + issue_key + ' - state is one of ' + ','.join(jira_options.ignore_states))
             return True
         return False
@@ -434,7 +473,7 @@ def build_graph_data(graph,
         link_issue_direction = direction + 'Issue'
         linked_issue = link[link_issue_direction]
         linked_node = JiraNode(linked_issue['key'], link[link_issue_direction]['fields'], jira.get_issue_uri(linked_issue['key']))
-        linked_issue_key = linked_node.get_key()
+        linked_issue_key = linked_node.key()
         if should_ignore_issue(linked_node):
             return
 
@@ -450,7 +489,7 @@ def build_graph_data(graph,
             return linked_issue_key, None
 
         arrow = ' => ' if direction == 'outward' else ' <= '
-        if jira_options.verbose: log(node.get_key() + arrow + link_type + arrow + linked_issue_key)
+        if jira_options.verbose: log(node.key() + arrow + link_type + arrow + linked_issue_key)
 
         extra = get_extra_decorations_for_link_type(link_type)
         if direction not in jira_options.show_directions:
@@ -513,7 +552,7 @@ def build_graph_data(graph,
                     node.create_node_name(),
                     subtask_node.create_node_name())
                 add_link_to_graph(graph, link_text)
-                children.append(subtask_node.get_key())
+                children.append(subtask_node.key())
 
         subtasks = [] if jira_options.ignore_subtasks else node.get_subtasks()
         for subtask in subtasks:
@@ -524,7 +563,7 @@ def build_graph_data(graph,
                     node.create_node_name(),
                     subtask_node.create_node_name())
                 add_link_to_graph(graph, link_text)
-                children.append(subtask_node.get_key())
+                children.append(subtask_node.key())
 
         other_links = node.get_issue_links()
         for other_link in other_links:
