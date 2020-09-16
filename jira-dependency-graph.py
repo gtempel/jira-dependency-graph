@@ -7,7 +7,8 @@ import getpass
 import sys
 import textwrap
 import requests
-import timestring
+import dateparser
+import re
 from more_itertools import bucket
 
 from functools import reduce
@@ -33,7 +34,6 @@ class JiraGraph(object):
         if node.blocked():
             self.add_blocked_node(node)
 
-
     def add_link_node(self, node):
         self.__graph_data['links'].add(node)
 
@@ -46,39 +46,34 @@ class JiraGraph(object):
     def add_blocked_node(self, node):
         self.__blocked.add(node)
 
-    def generate_digraph(self, default_node_shape):
+    def generate_digraph(self, options):
         """
             This method takes the graph information and converts it to dot (graphviz) notation,
             returning the dot description as a string to the caller.
         """
-        graph_defaults = 'graph [rankdir=LR];' # splines=ortho
-        node_defaults = 'node [fontname=Helvetica, shape=' + default_node_shape +'];'
+        ranks = []
+        if options.group:
+            buckets = bucket(self.__graph_data['nodes'], key=lambda x: x.get_date().strftime("%Y%m%d") if x.get_date() else '')
+            bucket_list = sorted(list(buckets))
+            sorted_buckets = sorted(list(buckets))
+            for k in sorted_buckets:
+                items = sorted([node.create_node_name() for node in list(buckets[k])])
+                log("items for " + k + ": " + '\n'.join(items))
+                label = k if k else 'None'
+                ranks.append('subgraph cluster_' + label + ' {\nlabel="' + label + '"\nrank=same\n"' + '",\n"'.join(items) + '"\n};')
 
+        nodes = ';\n'.join(sorted([node.create_node_text() for node in self.__graph_data['nodes']]))
+        links = ';\n'.join(sorted(self.__graph_data['links']))
         blockers = ';\n'.join(['"{}" [color=red, penwidth=2]'.format(node.create_node_name()) for node in self.__blocked if node.blocked()])
-        nodes = ';\n'.join([node.create_node_text() for node in self.__graph_data['nodes']])
-        links = ';\n'.join(self.__graph_data['links'])
-        graph = '\n// Nodes:\n' + nodes + ';\n// Links:\n' + links
-
-        # how about ordering/ranking by date? That would entail bucketing the
-        # nodes based on date, ordering those buckets, then emitting
-        # rank groupings for each of those buckets, in order
-        buckets = bucket(self.__graph_data['nodes'], key=lambda x: x.get_date().strftime("%Y%m%d") if x.get_date() else '')
-        bucket_list = sorted(list(buckets))
-        sorted_buckets = sorted(list(buckets))
-        ranks = []
-        nodes = []
-        for k in sorted_buckets:
-            items = [node.create_node_name() for node in list(buckets[k])]
-            ranks.append('{\nrank=same\n"' + '",\n"'.join(items) + '"\n};')
-            # nodes = nodes + [n for n in list(buckets[k])]
-
-        ranks = []
-        nodes = ';\n'.join([node.create_node_text() for node in nodes])
-        digraph = "digraph{{\n{node_defaults}\n{graph_defaults}\n// Graph starts here\n{graph}\n// These items are blocked\n{blockers}\n// Grouped by date\n{ranks}}}".format(node_defaults=node_defaults,
-                                                                                            graph_defaults=graph_defaults,
-                                                                                            graph=graph,
-                                                                                            blockers=blockers,
-                                                                                            ranks="\n".join(ranks))
+        digraph = "digraph Dependencies {\n" + \
+            'node [fontname=Helvetica, shape=' + options.node_shape +'];' + '\n' + \
+            'graph [rankdir=LR];\n' + \
+            '// Graph starts here\n' + \
+            '// Nodes\n' + nodes + '\n' + \
+            '// Edges (links)\n' + links + '\n' + \
+            '// These items are blocked\n' + blockers + '\n' + \
+            '// Grouped by date\n' + "\n".join(ranks) + '\n' + \
+            '}'
         return digraph
 
 class JiraGraphRenderer(object):
@@ -87,24 +82,24 @@ class JiraGraphRenderer(object):
         as (potentially) a png via a web service call (not working at the moment)
     """
 
-    def generate_dotfile(self, graph, default_node_shape, filename='graph_data.dot'):
+    def generate_dotfile(self, graph, options, filename='graph_data.dot'):
         """
             Given the graph object, ask it to be rendered to a dot file
             then write that file to storage using the given filename.
         """
-        digraph = graph.generate_digraph(default_node_shape)
+        digraph = graph.generate_digraph(options)
         with open(filename, "w") as dotfile:
             dotfile.write(digraph)
             dotfile.close()
         return digraph
 
-    def render(self, graph, default_node_shape, filename='issue_graph.png'):
+    def render(self, graph, options, filename='issue_graph.png'):
         """ Given a formatted blob of graphviz chart data[1], make the actual request to Google
             and store the resulting image to disk.
 
             [1]: http://code.google.com/apis/chart/docs/gallery/graphviz.html
         """
-        digraph = graph.generate_digraph(default_node_shape)
+        digraph = graph.generate_digraph(options)
         print('sending: ', GOOGLE_CHART_URL, {'cht':'gv', 'chl': digraph})
 
         response = requests.post(GOOGLE_CHART_URL, data = {'cht':'gv', 'chl': digraph})
@@ -267,6 +262,16 @@ class JiraNode(object):
         self.__uri = uri # jira.get_issue_uri(issue_key)
         self.__blocked = 'BLOCK' in self.status_text()
 
+    def __eq__(self, other):
+        """Overrides the default implementation"""
+        if isinstance(other, JiraNode):
+            return self.key() == other.key()
+        return NotImplemented
+
+    def __hash__(self):
+        """Overrides the default implementation"""
+        return hash(self.key())
+
     def key(self):
         return self.__key
 
@@ -308,34 +313,52 @@ class JiraNode(object):
         return self.issue_type() == 'Epic'
 
     def issue_type(self):
-        issue_type = self.__fields['issuetype']['name']
+        issue_type = self.fields()['issuetype']['name']
         return issue_type
 
     def team_name(self):
         key = 'Team Name'
         try:
-            return self.__fields[key][0]['value']
+            return self.fields()[key][0]['value']
         except (KeyError, ValueError, TypeError):
             return None
     
     def sprint(self):
         key = 'Sprint'
         try:
-            return self.__fields[key][0]['name']
+            return self.fields()[key][0]['name']
         except (KeyError, ValueError, TypeError):
             return None
     
     def sprint_end_date(self):
         key = 'Sprint'
         try:
-            return self.__fields[key][0]['endDate']
+            return self.fields()[key][0]['endDate']
+
         except (KeyError, ValueError, TypeError):
-            return None
-    
+            # likely Jira doesn't have Sprint detail info because it hasn't started yet, so we'll
+            # have to mine what we have
+            regex = r"(\d{1,2}\/\d{1,2}\/?(?:\d{0,4})){0,1}\s*-\s*(\d{1,2}\/\d{1,2}\/?(?:\d{0,4})){0,1}(?:\s*\('?(\d{0,4})\)){0,1}"
+            text = self.sprint()
+            end_date = None
+            if text:
+                match = re.search(regex, text)
+                groups = match.groups() if match else (None, None)
+
+                group_count = len(groups)
+                year_group = groups[2] if (group_count == 3) else None
+                if year_group:
+                    end_date = groups[1] + '/' + year_group
+                else:
+                    end_date = groups[1]
+
+            return end_date
+
+
     def cab_datetime(self):
         key = 'Implementation Date/Time'
         try:
-            datetime = self.__fields[key]
+            datetime = self.fields()[key]
             datetime = datetime.split('T', 1)
             return datetime[0]
         except (KeyError, ValueError, TypeError, AttributeError):
@@ -347,9 +370,9 @@ class JiraNode(object):
         sprint_info = self.sprint_end_date()
 
         if cab_info:
-            return timestring.Date(cab_info).date.date()
+            return dateparser.parse(cab_info).date()
         elif sprint_info:
-            return timestring.Date(sprint_info).date.date()
+            return dateparser.parse(sprint_info).date()
         else:
             return None
 
@@ -559,7 +582,7 @@ def build_graph_data(graph,
             subtask_node = JiraNode(subtask['key'], subtask['fields'], jira.get_issue_uri(subtask['key']))
             if not should_ignore_issue(subtask_node):
                 subtask_name = subtask_node.create_node_name()
-                link_text = '"{}"->"{}"[color=blue][label="subtask"]'.format (
+                link_text = '"{}"->"{}"[color=blue, label="subtask"]'.format (
                     node.create_node_name(),
                     subtask_node.create_node_name())
                 add_link_to_graph(graph, link_text)
@@ -614,6 +637,7 @@ def parse_args(arg_list = []):
     parser.add_argument('-af', '--add-field', dest='extra_fields', action='append', default=[], help='Include these extra fields from the issues, such as "Epic Link"')
     parser.add_argument('-la', '--label', dest='labels', action='append', default=[], help='Find these labels (ex: "B&P_Ingestion")')
     parser.add_argument('-b', '--blockers', dest='blockers', default=False, action='store_true', help='Highlight blocking and blocked items')
+    parser.add_argument('-g', '--group', dest='group', default=False, action='store_true', help='Group cases by dates (sprint end or CERT date)')
 
     parser.add_argument('--no-verify-ssl', dest='no_verify_ssl', default=False, action='store_true', help='Don\'t verify SSL certs for requests')
     parser.add_argument('issues', nargs='+', help='The issue key (e.g. JRADEV-1107, JRADEV-1391)')
@@ -659,11 +683,11 @@ def main(arg_list = []):
         build_graph_data(graph, issue, jira, jira_options)
 
     if jira_options.local:
-        print(graph.generate_digraph(jira_options.node_shape))
+        print(graph.generate_digraph(jira_options))
     else:
         graph_renderer = JiraGraphRenderer()
-        graph_renderer.generate_dotfile(graph, jira_options.node_shape, 'graph_data.dot')
-        graph_renderer.render(graph, 'issue_graph.png')
+        graph_renderer.generate_dotfile(graph, jira_options, 'graph_data.dot')
+        # graph_renderer.render(graph, jira_options, 'issue_graph.png')
 
 
 
@@ -714,6 +738,7 @@ if __name__ == '__main__':
         '--label', 'colonial',
         #'--verbose', 
         '--blockers',
+        '--group',
         #'--local',
         # 'ARC-5360'
         # 'CERT-1070', 'CERT-929', 'CERT-803',
