@@ -9,7 +9,9 @@ import textwrap
 import requests
 import dateparser
 import re
+from datetime import datetime
 from more_itertools import bucket
+import cardinality
 
 from functools import reduce
 
@@ -52,20 +54,44 @@ class JiraGraph(object):
             returning the dot description as a string to the caller.
         """
         ranks = []
-        if options.group:
+        if options.grouped:
             buckets = bucket(self.__graph_data['nodes'], key=lambda x: x.get_date().strftime("%Y%m%d") if x.get_date() else '')
             bucket_list = sorted(list(buckets))
             sorted_buckets = sorted(list(buckets))
             for k in sorted_buckets:
                 items = sorted([node.create_node_name() for node in list(buckets[k])])
-                log("items for " + k + ": " + '\n'.join(items))
                 label = k if k else 'None'
                 ranks.append('subgraph cluster_' + label + ' {\nlabel="' + label + '"\nrank=same\n"' + '",\n"'.join(items) + '"\n};')
 
         nodes = ';\n'.join(sorted([node.create_node_text() for node in self.__graph_data['nodes']]))
         links = ';\n'.join(sorted(self.__graph_data['links']))
         blockers = ';\n'.join(['"{}" [color=red, penwidth=2]'.format(node.create_node_name()) for node in self.__blocked if node.blocked()])
+        
+        count_blockers = cardinality.count(node for node in self.__blocked if node.blocked())
+        count_stories = cardinality.count(node for node in self.__graph_data['nodes'] if 'CERT-' not in node.key())
+        count_epics = cardinality.count(node for node in self.__graph_data['nodes'] if 'CERT-' in node.key())
+
+        graph_label = []
+        graph_label.append("Generated @ " + datetime.now().replace(microsecond=0).isoformat(' '))
+        if options.issues:
+            graph_label.append("Cases: " + ', '.join(options.issues))
+        if options.labels:
+            graph_label.append("Cases labeled: " + ', '.join(options.labels))
+        if options.extra_fields:
+            graph_label.append("Showing: " + ', '.join(options.extra_fields))
+        if options.grouped:
+            graph_label.append("Grouped by date (sprint end or CERT implementation date")
+        if count_epics:
+            graph_label.append(str(count_epics) + ' epics')
+        if count_stories:
+            graph_label.append(str(count_stories) + ' stories')
+        if count_blockers:
+            graph_label.append(str(count_blockers) + ' blockers')
+        
         digraph = "digraph Dependencies {\n" + \
+            'graph [fontname=Helvetica];\n' + \
+            'labelloc=top; labeljust=left;\n' + \
+            'label="' + '\l'.join(graph_label) + '\l";\n' + \
             'node [fontname=Helvetica, shape=' + options.node_shape +'];' + '\n' + \
             'graph [rankdir=LR];\n' + \
             '// Graph starts here\n' + \
@@ -637,7 +663,7 @@ def parse_args(arg_list = []):
     parser.add_argument('-af', '--add-field', dest='extra_fields', action='append', default=[], help='Include these extra fields from the issues, such as "Epic Link"')
     parser.add_argument('-la', '--label', dest='labels', action='append', default=[], help='Find these labels (ex: "B&P_Ingestion")')
     parser.add_argument('-b', '--blockers', dest='blockers', default=False, action='store_true', help='Highlight blocking and blocked items')
-    parser.add_argument('-g', '--group', dest='group', default=False, action='store_true', help='Group cases by dates (sprint end or CERT date)')
+    parser.add_argument('-g', '--grouped', dest='grouped', default=False, action='store_true', help='Group cases by dates (sprint end or CERT date)')
 
     parser.add_argument('--no-verify-ssl', dest='no_verify_ssl', default=False, action='store_true', help='Don\'t verify SSL certs for requests')
     parser.add_argument('issues', nargs='+', help='The issue key (e.g. JRADEV-1107, JRADEV-1391)')
@@ -676,10 +702,10 @@ def main(arg_list = []):
 
     jira_options.ignore_states = [ state.upper() for state in jira_options.ignore_states ]
 
-    if cases:
-        jira_options.issues = filter(None, jira_options.issues + cases)
+    if not cases:
+        cases = []
 
-    for issue in jira_options.issues:
+    for issue in [item for item in [issue for issue in jira_options.issues if issue] + cases if item]:
         build_graph_data(graph, issue, jira, jira_options)
 
     if jira_options.local:
@@ -688,7 +714,7 @@ def main(arg_list = []):
         graph_renderer = JiraGraphRenderer()
         graph_renderer.generate_dotfile(graph, jira_options, 'graph_data.dot')
         # graph_renderer.render(graph, jira_options, 'issue_graph.png')
-
+    print("Done")
 
 
 if __name__ == '__main__':
@@ -715,39 +741,17 @@ if __name__ == '__main__':
         # '--ignore-subtasks', 
         '--add-field', 'Epic Link',
         '--add-field', 'labels',
-        '--add-field', 'Team',
         '--add-field', 'Team Name',
         '--add-field', 'Implementation Date/Time',
         '--add-field', 'Sprint',
-        # '--label', 'B&P_Ingestion_Agilicats_Core',
-        # '--label', 'RS-BnpIngest-Biscuit',
-        # '--label', 'B&P_Ingestion_Create_Import_Batch',
-        # '--label', 'B&P_Ingestion_Historical_Document_History',
-        # '--label', 'B&P_Ingestion_Electronic_Document_History',
-        # '--label', 'RS-BnpIngest-Worker',
-        # '--label', 'B&P_Ingestion_PDF_Processing',
-        # '--label', 'B&P_Ingestion_Postal_Document_History',
-        # '--label', 'B&P_Ingestion_Batch_Monitoring',
-        # '--label', 'B&P_Ingestion_Prod_Readiness',
-        # '--label', 'B&P_Ingestion_Customer_Testing',
-        # '--label', 'B&P_Ingestion_Batch_Ingestion',
-        # '--label', 'B&P_Ingestion_Historical_Batch_Ingestion',
-        # '--label', 'B&P_Ingestion_Batch_Ingestion_Load_Testing',
-        # '--label', 'B&P_Dev_Load_Testing',
-        # '--label', 'B&P_Manual_Customer_Testing',
         '--label', 'colonial',
         #'--verbose', 
         '--blockers',
-        '--group',
+        # '--grouped',
         #'--local',
-        # 'ARC-5360'
-        # 'CERT-1070', 'CERT-929', 'CERT-803',
-        # 'CERT-1610'
-        # 'CERT-1655',
         'ARC-4982',
         'ARC-5658',
         'ARC-5168',
-        'ARC-5420',
-        ''
+        'ARC-5420'
         ]
     main(arg_list)
