@@ -68,8 +68,9 @@ class JiraGraph(object):
         blockers = ';\n'.join(['"{}" [color=red, penwidth=2]'.format(node.create_node_name()) for node in self.__blocked if node.blocked()])
         
         count_blockers = cardinality.count(node for node in self.__blocked if node.blocked())
-        count_stories = cardinality.count(node for node in self.__graph_data['nodes'] if 'CERT-' not in node.key())
-        count_epics = cardinality.count(node for node in self.__graph_data['nodes'] if 'CERT-' in node.key())
+        count_stories = cardinality.count(node for node in self.__graph_data['nodes'] if node.is_type('Story'))
+        count_epics = cardinality.count(node for node in self.__graph_data['nodes'] if node.is_type('Epic'))
+        count_certs = cardinality.count(node for node in self.__graph_data['nodes'] if node.is_type('Cert'))
 
         graph_label = []
         graph_label.append("Generated @ " + datetime.now().replace(microsecond=0).isoformat(' '))
@@ -85,6 +86,8 @@ class JiraGraph(object):
             graph_label.append(str(count_epics) + ' epics')
         if count_stories:
             graph_label.append(str(count_stories) + ' stories')
+        if count_certs:
+            graph_label.append(str(count_certs) + ' CERT cases')
         if count_blockers:
             graph_label.append(str(count_blockers) + ' blockers')
         
@@ -335,8 +338,15 @@ class JiraNode(object):
     def get_extra_decorations_for_status(self):
         return ''
 
+    def is_type(self, *issue_types):
+        this_type = self.issue_type().upper()
+        return any(t.upper() in this_type for t in issue_types)
+
     def is_epic(self):
-        return self.issue_type() == 'Epic'
+        return self.is_type('EPIC')
+
+    def is_cert(self):
+        return self.is_type('CERT')
 
     def issue_type(self):
         issue_type = self.fields()['issuetype']['name']
