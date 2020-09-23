@@ -67,6 +67,7 @@ class JiraGraph(object):
         links = ';\n'.join(sorted(self.__graph_data['links']))
         blockers = ';\n'.join(['"{}" [color=red, penwidth=2]'.format(node.create_node_name()) for node in self.__blocked if node.blocked()])
         
+        dates = list(set(node.get_date() for node in self.__graph_data['nodes'] if node.get_date()))
         count_blockers = cardinality.count(node for node in self.__blocked if node.blocked())
         count_stories = cardinality.count(node for node in self.__graph_data['nodes'] if node.is_type('Story'))
         count_epics = cardinality.count(node for node in self.__graph_data['nodes'] if node.is_type('Epic'))
@@ -74,6 +75,13 @@ class JiraGraph(object):
 
         graph_label = []
         graph_label.append("Generated @ " + datetime.now().replace(microsecond=0).isoformat(' '))
+        if dates:
+            start_date = min(dates)
+            end_date = max(dates)
+            if start_date:
+                graph_label.append("Starting " + start_date.strftime("%Y-%m-%d"))
+            if end_date:
+                graph_label.append("Ending " + end_date.strftime("%Y-%m-%d"))
         if options.issues:
             graph_label.append("Cases: " + ', '.join(options.issues))
         if options.labels:
