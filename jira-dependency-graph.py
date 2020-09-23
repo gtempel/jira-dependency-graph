@@ -5,15 +5,12 @@ from __future__ import print_function
 import argparse
 import getpass
 import sys
-import textwrap
 import requests
 import dateparser
 import re
 from datetime import datetime
 from more_itertools import bucket
 import cardinality
-
-from functools import reduce
 
 GOOGLE_CHART_URL = 'https://chart.apis.google.com/chart'
 MAX_SUMMARY_LENGTH = 30
