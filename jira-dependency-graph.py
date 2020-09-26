@@ -65,11 +65,20 @@ class JiraGraph(object):
         blockers = ';\n'.join(['"{}" [color=red, penwidth=2]'.format(node.create_node_name()) for node in self.__blocked if node.blocked()])
         
         dates = list(set(node.get_date() for node in self.__graph_data['nodes'] if node.get_date()))
-        count_blockers = cardinality.count(node for node in self.__blocked if node.blocked())
-        count_stories = cardinality.count(node for node in self.__graph_data['nodes'] if node.is_type('Story'))
-        count_epics = cardinality.count(node for node in self.__graph_data['nodes'] if node.is_type('Epic'))
-        count_certs = cardinality.count(node for node in self.__graph_data['nodes'] if node.is_type('Cert'))
+        counts = {
+            'Story': 0,
+            'Epic': 0,
+            'Cert': 0
+        }
+        count_blockers = 0
 
+        for node in self.__graph_data['nodes']:
+            if node.blocked():
+                count_blockers += 1
+            for key, value in counts.items():
+                if node.is_type(key):
+                    counts[key] += 1
+        
         graph_label = []
         graph_label.append("Generated @ " + datetime.now().replace(microsecond=0).isoformat(' '))
         if dates:
@@ -87,14 +96,12 @@ class JiraGraph(object):
             graph_label.append("Showing: " + ', '.join(options.extra_fields))
         if options.grouped:
             graph_label.append("Grouped by date (sprint end or CERT implementation date")
-        if count_epics:
-            graph_label.append(str(count_epics) + ' epics')
-        if count_stories:
-            graph_label.append(str(count_stories) + ' stories')
-        if count_certs:
-            graph_label.append(str(count_certs) + ' CERT cases')
+        
+        for key, count in counts.items():
+            if counts[key]:
+                graph_label.append(key + ': ' + str(counts[key]))
         if count_blockers:
-            graph_label.append(str(count_blockers) + ' blockers')
+            graph_label.append('Blockers: ' + str(count_blockers))
         
         digraph = "digraph Dependencies {\n" + \
             'graph [fontname=Helvetica];\n' + \
