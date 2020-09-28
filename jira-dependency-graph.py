@@ -643,9 +643,9 @@ def build_graph_data(graph,
             subtask_node = JiraNode(subtask['key'], subtask['fields'], jira.get_issue_uri(subtask['key']))
             if not should_ignore_issue(subtask_node):
                 subtask_name = subtask_node.create_node_name()
-                link_text = '"{}"->"{}"[color=blue, label="subtask"]'.format (
-                    node.create_node_name(),
-                    subtask_node.create_node_name())
+                link_text = '"{}"->"{}"[color=blue, label="subtask of"]'.format (
+                    subtask_node.create_node_name(),
+                    node.create_node_name())
                 add_link_to_graph(graph, link_text)
                 children.append(subtask_node.key())
 
