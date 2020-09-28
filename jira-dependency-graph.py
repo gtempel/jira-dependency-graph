@@ -62,7 +62,7 @@ class JiraGraph(object):
 
         nodes = ';\n'.join(sorted([node.create_node_text() for node in self.__graph_data['nodes']]))
         links = ';\n'.join(sorted(self.__graph_data['links']))
-        blockers = ';\n'.join(['"{}" [color=red, penwidth=2]'.format(node.create_node_name()) for node in self.__blocked if node.blocked()])
+        blockers = ';\n'.join(['"{}" [color=red, penwidth=2]'.format(node.create_node_name()) for node in self.__blocked])
         
         dates = list(set(node.get_date() for node in self.__graph_data['nodes'] if node.get_date()))
         counts = {
@@ -70,11 +70,9 @@ class JiraGraph(object):
             'Epic': 0,
             'Cert': 0
         }
-        count_blockers = 0
+        count_blockers = len(self.__blocked)
 
         for node in self.__graph_data['nodes']:
-            if node.blocked():
-                count_blockers += 1
             for key, value in counts.items():
                 if node.is_type(key):
                     counts[key] += 1
@@ -181,6 +179,8 @@ class JiraSearch(object):
             if customfield_name:
                 fieldnames.append(customfield_name)
                 self.__fields_to_map[customfield_name] = extra_issue_field_name
+            else:
+                fieldnames.append(extra_issue_field_name)
         self.fields = ','.join(fieldnames)
 
     def get_customfields(self):
@@ -364,6 +364,12 @@ class JiraNode(object):
         issue_type = self.fields()['issuetype']['name']
         return issue_type
 
+    def labels(self):
+        try:
+            return self.fields()['labels']
+        except (KeyError, ValueError, TypeError):
+            return None
+
     def team_name(self):
         key = 'Team Name'
         try:
@@ -462,11 +468,18 @@ class JiraNode(object):
 
 
     def create_node_description(self):
+        labels = self.labels()
+        if labels:
+            labels = '\\n'.join(['#' + label for label in labels if label])
+        else:
+            labels = None
+
         parts = [ self.create_node_name(),
                 self.team_name(),
                 self.sprint(),
                 self.cab_datetime(),
-                self.get_node_summary()
+                self.get_node_summary(),
+                labels
                 ]
         description = '\\n'.join([x for x in parts if x is not None])
         return description
@@ -727,7 +740,8 @@ def main(arg_list = []):
     if not cases:
         cases = []
 
-    for issue in [item for item in [issue for issue in jira_options.issues if issue] + cases if item]:
+    jira_options.issues = [item for item in jira_options.issues if item]
+    for issue in [item for item in jira_options.issues if item] + cases:
         build_graph_data(graph, issue, jira, jira_options)
 
     if jira_options.local:
@@ -774,6 +788,7 @@ if __name__ == '__main__':
         'ARC-4982',
         'ARC-5658',
         'ARC-5168',
-        'ARC-5420'
+        'ARC-5420',
+        ''
         ]
     main(arg_list)
