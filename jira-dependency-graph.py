@@ -520,7 +520,14 @@ def build_graph_data(graph,
 
 
     def get_extra_decorations_for_link_type(link_type):
-        extra = ',color="red", penwidth=4.0' if 'BLOCK' in link_type.upper() else ""
+        extra = []
+        link_type = link_type.upper()
+        if 'BLOCK' in link_type:
+            extra.append('color="red", penwidth=4.0')
+        if 'RELATE' in link_type:
+            extra.append("style=dashed, arrowhead=none")
+        
+        extra = ', '.join(extra)
         return extra
 
     def should_ignore_issue(node):
@@ -584,7 +591,7 @@ def build_graph_data(graph,
                 node.create_node_name(),
                 linked_node.create_node_name(),
                 link_type if link_type in jira_options.link_labels else '',
-                extra)
+                (', ' + extra) if extra else '')
         blocked = 'BLOCK' in link_type.upper()
         if blocked:
             node.block(blocked)
