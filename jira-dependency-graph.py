@@ -10,7 +10,6 @@ import dateparser
 import re
 from datetime import datetime
 from more_itertools import bucket
-import cardinality
 
 GOOGLE_CHART_URL = 'https://chart.apis.google.com/chart'
 MAX_SUMMARY_LENGTH = 30
@@ -364,6 +363,13 @@ class JiraNode(object):
         issue_type = self.fields()['issuetype']['name']
         return issue_type
 
+    def project_prefix(self):
+        delim = '-'
+        key = self.key()
+        if delim in key:
+            return key.split(delim)[0]
+        return None
+
     def labels(self):
         try:
             return self.fields()['labels']
@@ -437,12 +443,18 @@ class JiraNode(object):
             "Story": default_shape,
             "Spike": default_shape,
             "subtask": "text", #"oval",
-            "Task": "MCircle",
+            "Hot Issue": "doublecircle",
+            "Task": "parallelogram",
             "Certified": "box3d"
         }
 
         issue_type = self.issue_type()
         shape = shapes.get(issue_type, default_shape)
+
+        # last minute adjustment
+        if self.project_prefix() == 'HI':
+            shape = shapes['Hot Issue']
+            
         return shape
 
     def get_subtasks(self):
@@ -787,15 +799,17 @@ if __name__ == '__main__':
         '--add-field', 'Team Name',
         '--add-field', 'Implementation Date/Time',
         '--add-field', 'Sprint',
-        '--label', 'colonial',
         #'--verbose', 
         '--blockers',
         # '--grouped',
         #'--local',
-        'ARC-4982',
-        'ARC-5658',
-        'ARC-5168',
-        'ARC-5420',
+        '--label', 'backend-cluster',
+        # '--label', 'colonial',
+        # 'ARC-4982',
+        # 'ARC-5658',
+        # 'ARC-5168',
+        # 'ARC-5420',
+        'HI-1575',
         ''
         ]
     main(arg_list)
