@@ -441,10 +441,10 @@ class JiraNode(object):
         shapes = {
             "Epic": "oval", #"diamond",
             "Story": default_shape,
-            "Spike": default_shape,
+            "Spike": "note",
             "subtask": "text", #"oval",
-            "Hot Issue": "doublecircle",
-            "Task": "parallelogram",
+            "Hot Issue": "folder", #"doublecircle",
+            "Task": "default_shape",
             "Certified": "box3d"
         }
 
@@ -544,8 +544,9 @@ def build_graph_data(graph,
 
     def should_ignore_issue(node):
         issue_key = node.key()
+        issue_project = node.project_prefix()
         issue_type = node.issue_type()
-        if (jira_options.issue_excludes and (issue_key in jira_options.issue_excludes)) or (jira_options.ignore_types and (issue_type in jira_options.ignore_types)):
+        if (jira_options.project_excludes and (issue_project in jira_options.project_excludes)) or (jira_options.ignore_types and (issue_type in jira_options.ignore_types)):
             if jira_options.verbose: log('Issue ' + issue_key + ' - should be ignored')
             return True
         if should_ignore_issue_due_to_state(node):
@@ -585,7 +586,7 @@ def build_graph_data(graph,
         if jira_options.ignore_states and link_issue_direction and (link[link_issue_direction]['fields']['status']['name'] in jira_options.ignore_states):
             return
 
-        if jira_options.includes not in linked_issue_key:
+        if jira_options.project_includes and (not linked_node.project_prefix() in jira_options.project_includes):
             return
 
         if link_type.strip() in jira_options.excludes:
@@ -706,8 +707,8 @@ def parse_args(arg_list = []):
     parser.add_argument('-ll', '--link-label', dest='link_labels', default=[], action='append', help='Provide labels for this type of relationship, such as "blocks"')
     parser.add_argument('-it', '--ignore-type', dest='ignore_types', action='append', default=[], help='Ignore issues of this type')
     parser.add_argument('-is', '--ignore-state', dest='ignore_states', action='append', default=[], help='Ignore issues with this state')
-    parser.add_argument('-pi', '--project-include', dest='includes', default='', help='Include project keys')
-    parser.add_argument('-px', '--project-exclude', dest='issue_excludes', action='append', default=[], help='Exclude these project keys; can be repeated for multiple issues')
+    parser.add_argument('-pi', '--project-include', dest='project_includes', action='append', default=[], help='Include project keys')
+    parser.add_argument('-px', '--project-exclude', dest='project_excludes', action='append', default=[], help='Exclude these project keys; can be repeated for multiple issues')
     parser.add_argument('-s', '--show-directions', dest='show_directions', default=['inward', 'outward'], help='which directions to show (inward, outward)')
     parser.add_argument('-d', '--directions', dest='directions', default=['inward', 'outward'], help='which directions to walk (inward, outward)')
     parser.add_argument('-ns', '--node-shape', dest='node_shape', default='box', help='which shape to use for nodes (circle, box, ellipse, etc)')
@@ -760,7 +761,7 @@ def main(arg_list = []):
         cases = []
 
     jira_options.issues = [item for item in jira_options.issues if item]
-    for issue in [item for item in jira_options.issues if item] + cases:
+    for issue in jira_options.issues + cases:
         build_graph_data(graph, issue, jira, jira_options)
 
     if jira_options.local:
@@ -781,16 +782,13 @@ if __name__ == '__main__':
         '--ignore-state', 'Done',
         '--ignore-state', 'Deployed',
         '--ignore-state', 'Not Deployed',
-        # '--ignore-state', "Won't Do",
         '--ignore-state', 'Completed',
         '--ignore-state', 'Rolled',
         '--exclude-link', 'clones',
         '--exclude-link', 'is cloned by',
         '--exclude-link', 'is blocked by',
         '--exclude-link', 'is related to',
-        # '--link-label', 'blocks',
-        #'--project-include', 'ARC',
-        #'--ignore-type', 'Certified',
+        '--link-label', 'blocks',
         '--ignore-type', 'Bug',
         '--ignore-type', 'Test',
         # '--ignore-subtasks', 
@@ -799,17 +797,13 @@ if __name__ == '__main__':
         '--add-field', 'Team Name',
         '--add-field', 'Implementation Date/Time',
         '--add-field', 'Sprint',
-        #'--verbose', 
         '--blockers',
-        # '--grouped',
-        #'--local',
         '--label', 'backend-cluster',
+        '--label', 'ABCO',
+        # '--label', 'tagging',
+        '--project-exclude', 'VCC',
         # '--label', 'colonial',
-        # 'ARC-4982',
-        # 'ARC-5658',
-        # 'ARC-5168',
-        # 'ARC-5420',
-        'HI-1575',
+        # 'HI-1575',
         ''
         ]
     main(arg_list)
