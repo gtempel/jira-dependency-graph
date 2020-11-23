@@ -215,6 +215,24 @@ class JiraSearch(object):
             issues = [item['key'] for item in response]
         return issues
 
+    def get_issues_for_project(self, project_prefix):
+        issues = []
+        if project_prefix:
+            response = self.get('/search', params={'jql': 'project="%s"' % project_prefix, 'maxResults': 0})
+            content = response.json()
+            total = content['total']
+            search_chunk_size = 1000
+            for start_index in range(0, total, search_chunk_size):
+                chunk_response = self.get('/search', params={'jql': 'project="%s"' % project_prefix, 'maxResults': search_chunk_size, 'startAt': start_index})
+                chunk_json = chunk_response.json()
+                issues.extend([issue['key'] for issue in chunk_json['issues']])
+        return issues
+
+    def get_issues_for_projects(self, projects_to_find):
+        issues = [self.get_issues_for_project(project_to_find) for project_to_find in projects_to_find]
+        flat_list = [item for sublist in issues for item in sublist]
+        return flat_list
+
     def get_labels(self, labels_to_find):
         labels = []
         if labels_to_find:
@@ -229,7 +247,7 @@ class JiraSearch(object):
                 # use 'any' below to OR the labels_to_find (has to match at least one find term)
                 new_labels = [label for label in payload['values'] if any(sub in label for sub in labels_to_find)]
                 if new_labels:
-                    labels = labels + new_labels
+                    labels = labels.extend(new_labels)
                 start_at = start_at + len(payload['values'])
                 is_last = payload['isLast']
 
@@ -603,7 +621,7 @@ def build_graph_data(graph,
             edge_definition = '"{}"->"{}"[label="{}"{}]'.format(
                 node.create_node_name(),
                 linked_node.create_node_name(),
-                link_type if link_type in jira_options.link_labels else '',
+                link_type if link_type.upper() in jira_options.link_labels else '',
                 (', ' + extra) if extra else '')
         blocked = 'BLOCK' in link_type.upper()
         if blocked:
@@ -743,25 +761,20 @@ def main(arg_list = []):
                     else getpass.getpass('Password: ')
         auth = (user, password)
 
+    # normalize all link_labels, which are the links/edges that we should label
+    options.link_labels = [text.upper() for text in options.link_labels]
+
     jira = JiraSearch(options.jira_url, auth, options.no_verify_ssl, options.extra_fields)
     graph = JiraGraph()
 
     jira_options = JiraOptions(vars(options))
 
-    # labels = jira.get_labels(jira_options.labels)
-    # if labels and jira_options.verbose:
-    #     print(labels)
-
-    cases = jira.get_issues_with_labels(jira_options.labels)
-    print(cases)
-
     jira_options.ignore_states = [ state.upper() for state in jira_options.ignore_states ]
 
-    if not cases:
-        cases = []
-
-    jira_options.issues = [item for item in jira_options.issues if item]
-    for issue in jira_options.issues + cases:
+    cases_for_labels = jira.get_issues_with_labels(jira_options.labels)
+    cases_for_projects = jira.get_issues_for_projects(jira_options.project_includes)
+    cases = [item for item in jira_options.issues if item] + cases_for_labels + cases_for_projects
+    for issue in cases:
         build_graph_data(graph, issue, jira, jira_options)
 
     if jira_options.local:
@@ -778,17 +791,18 @@ if __name__ == '__main__':
         '--user', 'gtempel@billtrust.com',
         '--password', 'QZ12rb4a5VEyBPwwOxZS8C27',
         '--jira', 'https://billtrust.atlassian.net',
-        '--ignore-state', 'Closed',
-        '--ignore-state', 'Done',
-        '--ignore-state', 'Deployed',
-        '--ignore-state', 'Not Deployed',
-        '--ignore-state', 'Completed',
-        '--ignore-state', 'Rolled',
+        # '--ignore-state', 'Closed',
+        # '--ignore-state', 'Done',
+        # '--ignore-state', 'Deployed',
+        # '--ignore-state', 'Not Deployed',
+        # '--ignore-state', 'Completed',
+        # '--ignore-state', 'Rolled',
         '--exclude-link', 'clones',
         '--exclude-link', 'is cloned by',
         '--exclude-link', 'is blocked by',
         '--exclude-link', 'is related to',
         '--link-label', 'blocks',
+        '--link-label', 'packaged with',
         '--ignore-type', 'Bug',
         '--ignore-type', 'Test',
         # '--ignore-subtasks', 
@@ -798,12 +812,30 @@ if __name__ == '__main__':
         '--add-field', 'Implementation Date/Time',
         '--add-field', 'Sprint',
         '--blockers',
-        '--label', 'backend-cluster',
-        '--label', 'ABCO',
+        # '--label', 'backend-cluster',
+        # '--label', 'ABCO',
+        # '--label', 'platform-bullpenning',
+        # '--label', 'invoicing-backfill',
+        # '--label', 'invoicing-onboarding',
+        # '--label', 'invoicing-performance',
         # '--label', 'tagging',
         '--project-exclude', 'VCC',
-        # '--label', 'colonial',
-        # 'HI-1575',
+        '--project-exclude', 'IG',
+        '--project-exclude', 'ADF',
+        '--project-exclude', 'CSR',
+        '--project-exclude', 'CC',
+        '--project-exclude', 'DEVBPS',
+        '--project-exclude', 'DENBKEND',
+        '--project-exclude', 'IVR',
+        '--project-exclude', 'VBQRT',
+        '--project-exclude', 'WAYP',
+        '--project-exclude', 'VUE',
+        '--project-exclude', 'VBWP',
+        '--project-exclude', 'DQRT',
+        '--project-exclude', 'DEN',
+        '--project-exclude', 'CRG',
+        '--project-exclude', 'CTD',
+        '--project-include', 'INV20',
         ''
         ]
     main(arg_list)
