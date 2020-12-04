@@ -56,10 +56,10 @@ class JiraGraph(object):
             sorted_buckets = sorted(list(buckets))
             for k in sorted_buckets:
                 items = sorted([node.create_node_name() for node in list(buckets[k])])
-                label = k if k else 'None'
+                label = k or 'None'
                 ranks.append('subgraph cluster_' + label + ' {\nlabel="' + label + '"\nrank=same\n"' + '",\n"'.join(items) + '"\n};')
 
-        nodes = ';\n'.join(sorted([node.create_node_text() for node in self.__graph_data['nodes']]))
+        nodes = ';\n'.join(sorted([node.create_node_markup(mapping = {**options.card_shape, **options.project_shape}) for node in self.__graph_data['nodes']]))
         links = ';\n'.join(sorted(self.__graph_data['links']))
         blockers = ';\n'.join(['"{}" [color=red, penwidth=2]'.format(node.create_node_name()) for node in self.__blocked])
         
@@ -85,10 +85,12 @@ class JiraGraph(object):
                 graph_label.append("Starting " + start_date.strftime("%Y-%m-%d"))
             if end_date:
                 graph_label.append("Ending " + end_date.strftime("%Y-%m-%d"))
-        if options.issues:
-            graph_label.append("Cases: " + ', '.join(options.issues))
+        if options.projects:
+            graph_label.append("Projects: " + ', '.join(options.projects))
         if options.labels:
             graph_label.append("Cases labeled: " + ', '.join(options.labels))
+        if options.issues:
+            graph_label.append("Cases: " + ', '.join(options.issues))
         if options.extra_fields:
             graph_label.append("Showing: " + ', '.join(options.extra_fields))
         if options.grouped:
@@ -313,11 +315,12 @@ class JiraNode(object):
     __key = None
     __blocked = False
     __uri = None
+    __shape = 'rect'
 
     def __init__(self, issue_key = None, fields = {}, uri = None):
         self.__key = issue_key
         self.__fields = fields
-        self.__uri = uri # jira.get_issue_uri(issue_key)
+        self.__uri = uri
         self.__blocked = 'BLOCK' in self.status_text()
 
     def __eq__(self, other):
@@ -454,25 +457,13 @@ class JiraNode(object):
         else:
             return None
 
-    def shape(self):
-        default_shape='rect'
-        shapes = {
-            "Epic": "oval", #"diamond",
-            "Story": default_shape,
-            "Spike": "note",
-            "subtask": "text", #"oval",
-            "Hot Issue": "folder", #"doublecircle",
-            "Task": "default_shape",
-            "Certified": "box3d"
-        }
-
+    def shape(self, shapes = {}):
         issue_type = self.issue_type()
-        shape = shapes.get(issue_type, default_shape)
+        shape = shapes.get(issue_type, None)
 
-        # last minute adjustment
-        if self.project_prefix() == 'HI':
-            shape = shapes['Hot Issue']
-            
+        if not shape:
+            shape = shapes.get(self.project_prefix())
+        
         return shape
 
     def get_subtasks(self):
@@ -524,16 +515,22 @@ class JiraNode(object):
         summary = summary.replace('"', "'")
         return summary
 
-    def create_node_text(self, islink=False):
+    def create_node_markup(self, mapping = {}, islink=False):
         issue_name = self.create_node_name()
 
         if islink:
             summary = self.get_node_summary()
             return '"{}\\n({})"'.format(issue_name, summary)
         
-        return '"{}" [label="{}", shape="{}", href="{}", fillcolor="{}", style=filled {}]'.format(issue_name, 
+        shape = self.shape(mapping)
+        if shape:
+            shape = ', shape="{}"'.format(shape)
+        else:
+            shape = ''
+
+        return '"{}" [label="{}" {}, href="{}", fillcolor="{}", style=filled {}]'.format(issue_name, 
                                                                                             self.create_node_description(),
-                                                                                            self.shape(), 
+                                                                                            shape, 
                                                                                             self.__uri, 
                                                                                             self.status_color(),
                                                                                             self.get_extra_decorations_for_status())
@@ -634,7 +631,7 @@ def build_graph_data(graph,
 
     def add_node_to_graph(graph, node, islink = False):
         if islink:
-            node_text = node.create_node_text(islink=False)
+            node_text = node.create_node_markup(islink=False)
             add_link_to_graph(graph, node_text)
         else:
             graph.add_issue_node(node)
@@ -713,7 +710,8 @@ def build_graph_data(graph,
 
 
 def parse_args(arg_list = []):
-    parser = argparse.ArgumentParser(conflict_handler='resolve')
+    parser = argparse.ArgumentParser(description='Generate a Jira case dependency map for graphviz',
+        conflict_handler='resolve')
     parser.add_argument('-u', '--user', dest='user', default=None, help='Username to access JIRA')
     parser.add_argument('-p', '--password', dest='password', default=None, help='Password to access JIRA')
     parser.add_argument('-c', '--cookie', dest='cookie', default=None, help='JSESSIONID session cookie value')
@@ -725,11 +723,12 @@ def parse_args(arg_list = []):
     parser.add_argument('-ll', '--link-label', dest='link_labels', default=[], action='append', help='Provide labels for this type of relationship, such as "blocks"')
     parser.add_argument('-it', '--ignore-type', dest='ignore_types', action='append', default=[], help='Ignore issues of this type')
     parser.add_argument('-is', '--ignore-state', dest='ignore_states', action='append', default=[], help='Ignore issues with this state')
+    parser.add_argument('-pr', '--project', dest='projects', action='append', default=[], help='All cases from this project (BE CAREFUL!)')
     parser.add_argument('-pi', '--project-include', dest='project_includes', action='append', default=[], help='Include project keys')
     parser.add_argument('-px', '--project-exclude', dest='project_excludes', action='append', default=[], help='Exclude these project keys; can be repeated for multiple issues')
     parser.add_argument('-s', '--show-directions', dest='show_directions', default=['inward', 'outward'], help='which directions to show (inward, outward)')
     parser.add_argument('-d', '--directions', dest='directions', default=['inward', 'outward'], help='which directions to walk (inward, outward)')
-    parser.add_argument('-ns', '--node-shape', dest='node_shape', default='box', help='which shape to use for nodes (circle, box, ellipse, etc)')
+    parser.add_argument('-ns', '--node-shape', dest='node_shape', default='rect', help='which shape to use for nodes (circle, box, ellipse, etc)')
     parser.add_argument('-t', '--ignore-subtasks', action='store_true', default=False, help='Don''t include sub-tasks issues')
     parser.add_argument('-T', '--dont-traverse', dest='traverse', action='store_false', default=True, help='Do not traverse to other projects')
     parser.add_argument('-v', '--verbose', dest='verbose', default=False, action='store_true', help='Verbose logging')
@@ -739,9 +738,14 @@ def parse_args(arg_list = []):
     parser.add_argument('-g', '--grouped', dest='grouped', default=False, action='store_true', help='Group cases by dates (sprint end or CERT date)')
 
     parser.add_argument('--no-verify-ssl', dest='no_verify_ssl', default=False, action='store_true', help='Don\'t verify SSL certs for requests')
+    
+    parser.add_argument('--card-shape', action = type('', (argparse.Action, ), dict(__call__ = lambda a, p, n, v, o: getattr(n, a.dest).update(dict([v.split('=')])))), default = {}) # anonymously subclassing argparse.Action
+    parser.add_argument('--project-shape', action = type('', (argparse.Action, ), dict(__call__ = lambda a, p, n, v, o: getattr(n, a.dest).update(dict([v.split('=')])))), default = {}) # anonymously subclassing argparse.Action
+    
     parser.add_argument('issues', nargs='+', help='The issue key (e.g. JRADEV-1107, JRADEV-1391)')
 
-    return parser.parse_args(arg_list)
+    arguments = parser.parse_args(arg_list)
+    return arguments
 
 
 
@@ -768,12 +772,12 @@ def main(arg_list = []):
     graph = JiraGraph()
 
     jira_options = JiraOptions(vars(options))
-
+    jira_options.issues = [item for item in jira_options.issues if item]
     jira_options.ignore_states = [ state.upper() for state in jira_options.ignore_states ]
 
     cases_for_labels = jira.get_issues_with_labels(jira_options.labels)
-    cases_for_projects = jira.get_issues_for_projects(jira_options.project_includes)
-    cases = [item for item in jira_options.issues if item] + cases_for_labels + cases_for_projects
+    cases_for_projects = jira.get_issues_for_projects(jira_options.projects)
+    cases = jira_options.issues + cases_for_labels + cases_for_projects
     for issue in cases:
         build_graph_data(graph, issue, jira, jira_options)
 
@@ -788,54 +792,68 @@ def main(arg_list = []):
 
 if __name__ == '__main__':
     arg_list = [
-        '--user', 'gtempel@billtrust.com',
-        '--password', 'QZ12rb4a5VEyBPwwOxZS8C27',
-        '--jira', 'https://billtrust.atlassian.net',
-        # '--ignore-state', 'Closed',
-        # '--ignore-state', 'Done',
-        # '--ignore-state', 'Deployed',
-        # '--ignore-state', 'Not Deployed',
-        # '--ignore-state', 'Completed',
-        # '--ignore-state', 'Rolled',
-        '--exclude-link', 'clones',
-        '--exclude-link', 'is cloned by',
-        '--exclude-link', 'is blocked by',
-        '--exclude-link', 'is related to',
-        '--link-label', 'blocks',
-        '--link-label', 'packaged with',
-        '--ignore-type', 'Bug',
-        '--ignore-type', 'Test',
+        '--user=gtempel@billtrust.com',
+        '--password=QZ12rb4a5VEyBPwwOxZS8C27',
+        '--jira=https://billtrust.atlassian.net',
+        '--ignore-state=Closed',
+        '--ignore-state=Done',
+        '--ignore-state=Deployed',
+        '--ignore-state=Not Deployed',
+        '--ignore-state=Completed',
+        '--ignore-state=Rolled',
+        '--exclude-link=clones',
+        '--exclude-link=is cloned by',
+        '--exclude-link=is blocked by',
+        # '--exclude-link="is related to"',
+        '--link-label=blocks',
+        '--link-label=packaged with',
+        '--ignore-type=Bug',
+        '--ignore-type=Test',
         # '--ignore-subtasks', 
-        '--add-field', 'Epic Link',
-        '--add-field', 'labels',
-        '--add-field', 'Team Name',
-        '--add-field', 'Implementation Date/Time',
-        '--add-field', 'Sprint',
+        '--add-field=Epic Link',
+        '--add-field=labels',
+        '--add-field=Team Name',
+        '--add-field=Implementation Date/Time',
+        '--add-field=Sprint',
         '--blockers',
-        # '--label', 'backend-cluster',
-        # '--label', 'ABCO',
-        # '--label', 'platform-bullpenning',
-        # '--label', 'invoicing-backfill',
-        # '--label', 'invoicing-onboarding',
-        # '--label', 'invoicing-performance',
-        # '--label', 'tagging',
-        '--project-exclude', 'VCC',
-        '--project-exclude', 'IG',
-        '--project-exclude', 'ADF',
-        '--project-exclude', 'CSR',
-        '--project-exclude', 'CC',
-        '--project-exclude', 'DEVBPS',
-        '--project-exclude', 'DENBKEND',
-        '--project-exclude', 'IVR',
-        '--project-exclude', 'VBQRT',
-        '--project-exclude', 'WAYP',
-        '--project-exclude', 'VUE',
-        '--project-exclude', 'VBWP',
-        '--project-exclude', 'DQRT',
-        '--project-exclude', 'DEN',
-        '--project-exclude', 'CRG',
-        '--project-exclude', 'CTD',
-        '--project-include', 'INV20',
+        # '--label=backend-cluster',
+        # '--label=ABCO',
+        # '--label=platform-bullpenning',
+        # '--label=invoicing-backfill',
+        # '--label=invoicing-onboarding',
+        # '--label=invoicing-performance',
+        # '--label=tagging',
+        '--project-exclude=VCC',
+        '--project-exclude=IG',
+        '--project-exclude=ADF',
+        '--project-exclude=CSR',
+        '--project-exclude=CC',
+        '--project-exclude=DEVBPS',
+        '--project-exclude=DENBKEND',
+        '--project-exclude=IVR',
+        '--project-exclude=VBQRT',
+        '--project-exclude=WAYP',
+        '--project-exclude=VUE',
+        '--project-exclude=VBWP',
+        '--project-exclude=DQRT',
+        '--project-exclude=DEN',
+        '--project-exclude=CRG',
+        '--project-exclude=CTD',
+        '--project-exclude=EOPS',
+        '--project=INV20',
+        '--node-shape', 'rect',
+        '--card-shape', 'Certified=folder',
+        '--card-shape', 'Epic=oval',
+        '--card-shape', 'Story=rect',
+        '--card-shape', 'Spike=rect',
+        '--card-shape', 'subtask=text',
+        '--project-shape', 'SYS=note',
+        '--project-shape', 'ARC=rect',
+        '--project-shape', 'DEVOPS=note',
+        '--project-shape', 'INV20=component',
+        '--project-shape', 'Hot Issue=box3d',
+        '--project-shape', 'DAT=cylinder',
+        '--project-shape', 'DML=cylinder',
         ''
         ]
     main(arg_list)
