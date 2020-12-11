@@ -59,7 +59,16 @@ class JiraGraph(object):
                 label = k or 'None'
                 ranks.append('subgraph cluster_' + label + ' {\nlabel="' + label + '"\nrank=same\n"' + '",\n"'.join(items) + '"\n};')
 
-        nodes = ';\n'.join(sorted([node.create_node_markup(mapping = {**options.card_shape, **options.project_shape}) for node in self.__graph_data['nodes']]))
+        node_options = {
+            'shape_map': {**options.card_shape, **options.project_shape},
+            'color_map': {**options.status_color}, # redundant, but i may have to add more options
+            'show_status': options.show_status,
+            'show_team': options.show_team,
+            'show_sprint': options.show_sprint,
+            'show_date': options.show_date
+        }
+
+        nodes = ';\n'.join(sorted([node.create_node_markup(node_options) for node in self.__graph_data['nodes']]))
         links = ';\n'.join(sorted(self.__graph_data['links']))
         blockers = ';\n'.join(['"{}" [color=red, penwidth=2]'.format(node.create_node_name()) for node in self.__blocked])
         
@@ -210,14 +219,14 @@ class JiraSearch(object):
         else:
             return requests.get(url, params=params, auth=self.auth, headers=headers, verify=(not self.no_verify_ssl))
 
-    def get_issues_with_labels(self, labels_to_find):
+    def get_issues_with_labels(self, labels_to_find = []):
         issues = []
         if labels_to_find:
             response = self.query('labels in ({labels})'.format(labels=','.join('"' + item + '"' for item in labels_to_find)))
             issues = [item['key'] for item in response]
         return issues
 
-    def get_issues_for_project(self, project_prefix):
+    def get_issues_for_project(self, project_prefix = None):
         issues = []
         if project_prefix:
             response = self.get('/search', params={'jql': 'project="%s"' % project_prefix, 'maxResults': 0})
@@ -230,12 +239,12 @@ class JiraSearch(object):
                 issues.extend([issue['key'] for issue in chunk_json['issues']])
         return issues
 
-    def get_issues_for_projects(self, projects_to_find):
+    def get_issues_for_projects(self, projects_to_find = []):
         issues = [self.get_issues_for_project(project_to_find) for project_to_find in projects_to_find]
         flat_list = [item for sublist in issues for item in sublist]
         return flat_list
 
-    def get_labels(self, labels_to_find):
+    def get_labels(self, labels_to_find = []):
         labels = []
         if labels_to_find:
             labels_to_find = set(labels_to_find)
@@ -349,23 +358,15 @@ class JiraNode(object):
     def status(self):
         return self.__fields['status']
 
-    def status_text(self):
+    def status_category(self):
         return self.status()['statusCategory']['name'].upper()
 
-    def is_status_ignore(self, ignore_states = []):
-        return self.status_text() in ignore_states
+    def status_text(self):
+        return self.status()['name'].upper()
 
-    def status_color(self):
-        default_color = 'white'
-        colors = {
-            'IN PROGRESS': 'yellow',
-            'DONE': 'green',
-            'BLOCKED': 'red',
-            'BLOCKS' : 'red'
-        }
-        status = self.status_text()
-        color = colors.get(status, default_color)
-        return color
+    def is_status_ignore(self, ignore_states = []):
+        return self.status_text() in ignore_states or self.status_category() in ignore_states
+
 
     def get_extra_decorations_for_status(self):
         return ''
@@ -466,6 +467,13 @@ class JiraNode(object):
         
         return shape
 
+    def status_color(self, colors = {}):
+        default_color = 'white'
+        status_name = self.status_text()
+        status_category = self.status_category()
+        color = colors.get(status_name, None) or colors.get(status_category, default_color)
+        return color
+
     def get_subtasks(self):
         key = 'subtasks'
         return self.__fields[key] if key in self.__fields else []
@@ -488,17 +496,23 @@ class JiraNode(object):
         return '{} {}'.format(issue_type, self.key())
 
 
-    def create_node_description(self):
+    def create_node_description(self, options = {}):
         labels = self.labels()
         if labels:
             labels = '\\n'.join(['#' + label for label in labels if label])
         else:
             labels = None
 
+        if options.get('show_status'):
+            status_message = ' / '.join([x for x in set([self.status_category(), self.status_text()]) if x])
+        else:
+            status_message = None
+
         parts = [ self.create_node_name(),
-                self.team_name(),
-                self.sprint(),
-                self.cab_datetime(),
+                self.team_name() if options.get('show_team') else None,
+                self.sprint() if options.get('show_sprint') else None,
+                self.cab_datetime() if options.get('show_date') else None,
+                status_message,
                 self.get_node_summary(),
                 labels
                 ]
@@ -515,25 +529,31 @@ class JiraNode(object):
         summary = summary.replace('"', "'")
         return summary
 
-    def create_node_markup(self, mapping = {}, islink=False):
+    def create_node_markup(self, options = {}, islink=False):
         issue_name = self.create_node_name()
 
         if islink:
             summary = self.get_node_summary()
             return '"{}\\n({})"'.format(issue_name, summary)
         
-        shape = self.shape(mapping)
+        shape = self.shape(options.get('shape_map'))
         if shape:
             shape = ', shape="{}"'.format(shape)
         else:
             shape = ''
 
-        return '"{}" [label="{}" {}, href="{}", fillcolor="{}", style=filled {}]'.format(issue_name, 
-                                                                                            self.create_node_description(),
-                                                                                            shape, 
-                                                                                            self.__uri, 
-                                                                                            self.status_color(),
-                                                                                            self.get_extra_decorations_for_status())
+        color = self.status_color(options.get('color_map'))
+        if color:
+            color = ', fillcolor="{}"'.format(color)
+        else:
+            color = ''
+        
+        return '"{}" [label="{}" {}, href="{}" {}, style=filled {}]'.format(issue_name, 
+                                                                            self.create_node_description(options),
+                                                                            shape, 
+                                                                            self.__uri, 
+                                                                            color,
+                                                                            self.get_extra_decorations_for_status())
 
 
 def build_graph_data(graph,
@@ -712,35 +732,43 @@ def build_graph_data(graph,
 def parse_args(arg_list = []):
     parser = argparse.ArgumentParser(description='Generate a Jira case dependency map for graphviz',
         conflict_handler='resolve')
+    parser.add_argument('--no-verify-ssl', dest='no_verify_ssl', default=False, action='store_true', help='Don\'t verify SSL certs for requests')
     parser.add_argument('-u', '--user', dest='user', default=None, help='Username to access JIRA')
     parser.add_argument('-p', '--password', dest='password', default=None, help='Password to access JIRA')
     parser.add_argument('-c', '--cookie', dest='cookie', default=None, help='JSESSIONID session cookie value')
     parser.add_argument('-j', '--jira', dest='jira_url', default='http://jira.example.com', help='JIRA Base URL (with protocol)')
     parser.add_argument('-f', '--file', dest='image_file', default='issue_graph.png', help='Filename to write image to')
     parser.add_argument('-l', '--local', action='store_true', default=False, help='Render graphviz code to stdout')
-    parser.add_argument('-e', '--ignore-epic', action='store_true', default=False, help='Don''t follow an Epic into it''s children issues')
+    parser.add_argument('-v', '--verbose', dest='verbose', default=False, action='store_true', help='Verbose logging')
+
+    parser.add_argument('-ie', '--ignore-epic', action='store_true', default=False, help='Don''t follow an Epic into it''s children issues')
     parser.add_argument('-x', '--exclude-link', dest='excludes', default=[], action='append', help='Exclude link type(s)')
     parser.add_argument('-ll', '--link-label', dest='link_labels', default=[], action='append', help='Provide labels for this type of relationship, such as "blocks"')
-    parser.add_argument('-it', '--ignore-type', dest='ignore_types', action='append', default=[], help='Ignore issues of this type')
+    parser.add_argument('-d', '--directions', dest='directions', default=['inward', 'outward'], help='which directions to walk (inward, outward)')
+    parser.add_argument('-nt', '--dont-traverse', dest='traverse', action='store_false', default=True, help='Do not traverse to other projects')
+
+    parser.add_argument('-iy', '--ignore-type', dest='ignore_types', action='append', default=[], help='Ignore issues of this type')
     parser.add_argument('-is', '--ignore-state', dest='ignore_states', action='append', default=[], help='Ignore issues with this state')
     parser.add_argument('-pr', '--project', dest='projects', action='append', default=[], help='All cases from this project (BE CAREFUL!)')
     parser.add_argument('-pi', '--project-include', dest='project_includes', action='append', default=[], help='Include project keys')
     parser.add_argument('-px', '--project-exclude', dest='project_excludes', action='append', default=[], help='Exclude these project keys; can be repeated for multiple issues')
-    parser.add_argument('-s', '--show-directions', dest='show_directions', default=['inward', 'outward'], help='which directions to show (inward, outward)')
-    parser.add_argument('-d', '--directions', dest='directions', default=['inward', 'outward'], help='which directions to walk (inward, outward)')
     parser.add_argument('-ns', '--node-shape', dest='node_shape', default='rect', help='which shape to use for nodes (circle, box, ellipse, etc)')
-    parser.add_argument('-t', '--ignore-subtasks', action='store_true', default=False, help='Don''t include sub-tasks issues')
-    parser.add_argument('-T', '--dont-traverse', dest='traverse', action='store_false', default=True, help='Do not traverse to other projects')
-    parser.add_argument('-v', '--verbose', dest='verbose', default=False, action='store_true', help='Verbose logging')
+    parser.add_argument('-it', '--ignore-subtasks', action='store_true', default=False, help='Don''t include sub-tasks issues')
     parser.add_argument('-af', '--add-field', dest='extra_fields', action='append', default=[], help='Include these extra fields from the issues, such as "Epic Link"')
     parser.add_argument('-la', '--label', dest='labels', action='append', default=[], help='Find these labels (ex: "B&P_Ingestion")')
+
     parser.add_argument('-b', '--blockers', dest='blockers', default=False, action='store_true', help='Highlight blocking and blocked items')
     parser.add_argument('-g', '--grouped', dest='grouped', default=False, action='store_true', help='Group cases by dates (sprint end or CERT date)')
 
-    parser.add_argument('--no-verify-ssl', dest='no_verify_ssl', default=False, action='store_true', help='Don\'t verify SSL certs for requests')
+    parser.add_argument('-sd', '--show-directions', dest='show_directions', default=['inward', 'outward'], help='which directions to show (inward, outward)')
+    parser.add_argument('-sT', '--show-team', dest='show_team', default=False, action='store_true', help='Show team names.')
+    parser.add_argument('-sS', '--show-status', dest='show_status', default=False, action='store_true', help='Show status.')
+    parser.add_argument('-sP', '--show-sprint', dest='show_sprint', default=False, action='store_true', help='Show status.')
+    parser.add_argument('-sD', '--show-date', dest='show_date', default=False, action='store_true', help='Show status.')
     
     parser.add_argument('--card-shape', action = type('', (argparse.Action, ), dict(__call__ = lambda a, p, n, v, o: getattr(n, a.dest).update(dict([v.split('=')])))), default = {}) # anonymously subclassing argparse.Action
     parser.add_argument('--project-shape', action = type('', (argparse.Action, ), dict(__call__ = lambda a, p, n, v, o: getattr(n, a.dest).update(dict([v.split('=')])))), default = {}) # anonymously subclassing argparse.Action
+    parser.add_argument('--status-color', action = type('', (argparse.Action, ), dict(__call__ = lambda a, p, n, v, o: getattr(n, a.dest).update(dict([v.split('=')])))), default = {}) # anonymously subclassing argparse.Action
     
     parser.add_argument('issues', nargs='+', help='The issue key (e.g. JRADEV-1107, JRADEV-1391)')
 
@@ -768,16 +796,19 @@ def main(arg_list = []):
     # normalize all link_labels, which are the links/edges that we should label
     options.link_labels = [text.upper() for text in options.link_labels]
 
-    jira = JiraSearch(options.jira_url, auth, options.no_verify_ssl, options.extra_fields)
-    graph = JiraGraph()
-
     jira_options = JiraOptions(vars(options))
     jira_options.issues = [item for item in jira_options.issues if item]
     jira_options.ignore_states = [ state.upper() for state in jira_options.ignore_states ]
 
+    # determine what we should go find
+    jira = JiraSearch(options.jira_url, auth, options.no_verify_ssl, options.extra_fields)
+
     cases_for_labels = jira.get_issues_with_labels(jira_options.labels)
     cases_for_projects = jira.get_issues_for_projects(jira_options.projects)
     cases = jira_options.issues + cases_for_labels + cases_for_projects
+
+    # we have all the issues we are [initially] looking for, start walking the graph
+    graph = JiraGraph()
     for issue in cases:
         build_graph_data(graph, issue, jira, jira_options)
 
@@ -787,6 +818,7 @@ def main(arg_list = []):
         graph_renderer = JiraGraphRenderer()
         graph_renderer.generate_dotfile(graph, jira_options, 'graph_data.dot')
         # graph_renderer.render(graph, jira_options, 'issue_graph.png')
+
     print("Done")
 
 
@@ -801,9 +833,18 @@ if __name__ == '__main__':
         '--ignore-state=Not Deployed',
         '--ignore-state=Completed',
         '--ignore-state=Rolled',
+        '--status-color', 'IN PROGRESS=yellow',
+        '--status-color', 'DONE=green',
+        '--status-color', 'DEPLOYED=green',
+        '--status-color', 'BLOCKED=red',
+        '--status-color', 'BLOCKS=red',
+        '--status-color', 'PRODUCTION READINESS REVIEW=lightcyan',
+        '--status-color', 'SECURITY REVIEW=lightskyblue',
+        '--status-color', 'CAB REVIEW=steelblue1',
         '--exclude-link=clones',
         '--exclude-link=is cloned by',
         '--exclude-link=is blocked by',
+        '--exclude-link=relates to',
         # '--exclude-link="is related to"',
         '--link-label=blocks',
         '--link-label=packaged with',
@@ -854,6 +895,12 @@ if __name__ == '__main__':
         '--project-shape', 'Hot Issue=box3d',
         '--project-shape', 'DAT=cylinder',
         '--project-shape', 'DML=cylinder',
+        '--show-team',
+        '--show-status',
+        '--show-sprint',
+        '--show-date',
+        'CERT-2339',
+        'CERT-2333',
         ''
         ]
     main(arg_list)
