@@ -668,6 +668,8 @@ def build_graph_data(graph,
         return node
     
     def walk(issue_key, graph):
+        project_prefix = issue_key.split('-', 1)[0]
+
         node = get_node(issue_key)
         graph.mark_as_seen(issue_key)
 
@@ -677,7 +679,7 @@ def build_graph_data(graph,
             if jira_options.verbose: log('Skipping ' + issue_key + ' - state is one of ' + ','.join(jira_options.ignore_states))
             return graph
 
-        if not jira_options.traverse and ((project_prefix + '-') not in issue_key):
+        if (not jira_options.traverse) and ((project_prefix + '-') not in issue_key):
             if jira_options.verbose: log('Skipping ' + issue_key + ' - not traversing to a different project')
             return graph
 
@@ -827,12 +829,12 @@ if __name__ == '__main__':
         '--user=gtempel@billtrust.com',
         '--password=QZ12rb4a5VEyBPwwOxZS8C27',
         '--jira=https://billtrust.atlassian.net',
-        '--ignore-state=Closed',
-        '--ignore-state=Done',
-        '--ignore-state=Deployed',
-        '--ignore-state=Not Deployed',
-        '--ignore-state=Completed',
-        '--ignore-state=Rolled',
+        # '--ignore-state=Closed',
+        # '--ignore-state=Done',
+        # '--ignore-state=Deployed',
+        # '--ignore-state=Not Deployed',
+        # '--ignore-state=Completed',
+        # '--ignore-state=Rolled',
         '--status-color', 'IN PROGRESS=yellow',
         '--status-color', 'DONE=green',
         '--status-color', 'DEPLOYED=green',
@@ -841,6 +843,8 @@ if __name__ == '__main__':
         '--status-color', 'PRODUCTION READINESS REVIEW=lightcyan',
         '--status-color', 'SECURITY REVIEW=lightskyblue',
         '--status-color', 'CAB REVIEW=steelblue1',
+        '--status-color', 'DEPLOY TO PROD=yellowgreen',
+        '--status-color', 'DBA2APPLY=yellowgreen',
         '--exclude-link=clones',
         '--exclude-link=is cloned by',
         '--exclude-link=is blocked by',
@@ -881,7 +885,7 @@ if __name__ == '__main__':
         '--project-exclude=CRG',
         '--project-exclude=CTD',
         '--project-exclude=EOPS',
-        '--project=INV20',
+        # '--project=INV20',
         '--node-shape', 'rect',
         '--card-shape', 'Certified=folder',
         '--card-shape', 'Epic=oval',
@@ -899,8 +903,7 @@ if __name__ == '__main__':
         '--show-status',
         '--show-sprint',
         '--show-date',
-        'CERT-2339',
-        'CERT-2333',
+        'CERT-2307',
         ''
         ]
     main(arg_list)
