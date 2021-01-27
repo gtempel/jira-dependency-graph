@@ -460,10 +460,10 @@ class JiraNode(object):
 
     def shape(self, shapes = {}):
         issue_type = self.issue_type()
-        shape = shapes.get(issue_type, None)
+        shape = shapes.get(self.project_prefix())
 
         if not shape:
-            shape = shapes.get(self.project_prefix())
+            shape = shapes.get(issue_type, None)
         
         return shape
 
@@ -868,6 +868,7 @@ if __name__ == '__main__':
         # '--label=invoicing-onboarding',
         # '--label=invoicing-performance',
         # '--label=tagging',
+        # '--label=platform-first',
         '--project-exclude=VCC',
         '--project-exclude=IG',
         '--project-exclude=ADF',
@@ -896,14 +897,14 @@ if __name__ == '__main__':
         '--project-shape', 'ARC=rect',
         '--project-shape', 'DEVOPS=note',
         '--project-shape', 'INV20=component',
-        '--project-shape', 'Hot Issue=box3d',
+        '--project-shape', 'HI=box3d',
         '--project-shape', 'DAT=cylinder',
         '--project-shape', 'DML=cylinder',
         '--show-team',
         '--show-status',
         '--show-sprint',
         '--show-date',
-        'CERT-2307',
+        'HI-1634',
         ''
         ]
     main(arg_list)
