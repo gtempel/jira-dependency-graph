@@ -460,11 +460,9 @@ class JiraNode(object):
 
     def shape(self, shapes = {}):
         issue_type = self.issue_type()
-        shape = shapes.get(self.project_prefix())
+        project_prefix = self.project_prefix()
 
-        if not shape:
-            shape = shapes.get(issue_type, None)
-        
+        shape = shapes.get(project_prefix) or shapes.get(issue_type, 'none')
         return shape
 
     def status_color(self, colors = {}):
@@ -829,12 +827,12 @@ if __name__ == '__main__':
         '--user=gtempel@billtrust.com',
         '--password=QZ12rb4a5VEyBPwwOxZS8C27',
         '--jira=https://billtrust.atlassian.net',
-        # '--ignore-state=Closed',
-        # '--ignore-state=Done',
-        # '--ignore-state=Deployed',
-        # '--ignore-state=Not Deployed',
-        # '--ignore-state=Completed',
-        # '--ignore-state=Rolled',
+        '--ignore-state=Closed',
+        '--ignore-state=Done',
+        '--ignore-state=Deployed',
+        '--ignore-state=Not Deployed',
+        '--ignore-state=Completed',
+        '--ignore-state=Rolled',
         '--status-color', 'IN PROGRESS=yellow',
         '--status-color', 'DONE=green',
         '--status-color', 'DEPLOYED=green',
@@ -886,15 +884,16 @@ if __name__ == '__main__':
         '--project-exclude=CRG',
         '--project-exclude=CTD',
         '--project-exclude=EOPS',
+        '--project-exclude=NJAT',
         # '--project=INV20',
         '--node-shape', 'rect',
         '--card-shape', 'Certified=folder',
         '--card-shape', 'Epic=oval',
         '--card-shape', 'Story=rect',
-        '--card-shape', 'Spike=rect',
+        '--card-shape', 'Task=rect',
+        # '--card-shape', 'Spike=cds',
         '--card-shape', 'subtask=text',
         '--project-shape', 'SYS=note',
-        '--project-shape', 'ARC=rect',
         '--project-shape', 'DEVOPS=note',
         '--project-shape', 'INV20=component',
         '--project-shape', 'HI=box3d',
@@ -904,7 +903,13 @@ if __name__ == '__main__':
         '--show-status',
         '--show-sprint',
         '--show-date',
-        'HI-1634',
+        'ARC-6715',
+        'ARC-7486',
+        'ARC-6958',
+        'ARC-6677',
+        'ARC-6994',
+        'ARC-6633',
+        'ARC-6993'
         ''
         ]
     main(arg_list)
