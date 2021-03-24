@@ -10,8 +10,9 @@ import dateparser
 import re
 from datetime import datetime
 from more_itertools import bucket
+from graphviz import Source
+from os import path
 
-GOOGLE_CHART_URL = 'https://chart.apis.google.com/chart'
 MAX_SUMMARY_LENGTH = 30
 
 
@@ -131,34 +132,25 @@ class JiraGraphRenderer(object):
         as (potentially) a png via a web service call (not working at the moment)
     """
 
-    def generate_dotfile(self, graph, options, filename='graph_data.dot'):
+    def generate_dotfile(self, graph, options):
         """
             Given the graph object, ask it to be rendered to a dot file
             then write that file to storage using the given filename.
         """
         digraph = graph.generate_digraph(options)
-        with open(filename, "w") as dotfile:
+        with open(options.image_file, "w") as dotfile:
             dotfile.write(digraph)
             dotfile.close()
         return digraph
 
-    def render(self, graph, options, filename='issue_graph.png'):
-        """ Given a formatted blob of graphviz chart data[1], make the actual request to Google
-            and store the resulting image to disk.
-
-            [1]: http://code.google.com/apis/chart/docs/gallery/graphviz.html
-        """
+    def render(self, graph, options):
         digraph = graph.generate_digraph(options)
-        print('sending: ', GOOGLE_CHART_URL, {'cht':'gv', 'chl': digraph})
+        src = Source(digraph)
+        name, suffix = path.splitext(options.image_file)
+        suffix = suffix.replace(".", "")
+        src.render(filename = name, view = True, cleanup = True, format = suffix)
+        return options.image_file
 
-        response = requests.post(GOOGLE_CHART_URL, data = {'cht':'gv', 'chl': digraph})
-
-        with open(filename, 'w+b') as image:
-            print('Writing to ' + filename)
-            binary_format = bytearray(response.content)
-            image.write(binary_format)
-            image.close()
-        return filename
 
 
 class JiraSearch(object):
@@ -737,7 +729,7 @@ def parse_args(arg_list = []):
     parser.add_argument('-p', '--password', dest='password', default=None, help='Password to access JIRA')
     parser.add_argument('-c', '--cookie', dest='cookie', default=None, help='JSESSIONID session cookie value')
     parser.add_argument('-j', '--jira', dest='jira_url', default='http://jira.example.com', help='JIRA Base URL (with protocol)')
-    parser.add_argument('-f', '--file', dest='image_file', default='issue_graph.png', help='Filename to write image to')
+    parser.add_argument('-f', '--file', dest='image_file', default='graph.pdf', help='Filename to write image to')
     parser.add_argument('-l', '--local', action='store_true', default=False, help='Render graphviz code to stdout')
     parser.add_argument('-v', '--verbose', dest='verbose', default=False, action='store_true', help='Verbose logging')
 
@@ -816,8 +808,8 @@ def main(arg_list = []):
         print(graph.generate_digraph(jira_options))
     else:
         graph_renderer = JiraGraphRenderer()
-        graph_renderer.generate_dotfile(graph, jira_options, 'graph_data.dot')
-        # graph_renderer.render(graph, jira_options, 'issue_graph.png')
+        # graph_renderer.generate_dotfile(graph, jira_options, 'graph_data.dot')
+        graph_renderer.render(graph, jira_options)
 
     print("Done")
 
@@ -903,13 +895,17 @@ if __name__ == '__main__':
         '--show-status',
         '--show-sprint',
         '--show-date',
-        'ARC-6715',
+        'ARC-7733',
+        'ARC-7723',
+        'ARC-7722',
         'ARC-7486',
+        'ARC-6994',
+        'ARC-6993',
         'ARC-6958',
         'ARC-6677',
-        'ARC-6994',
+        'ARC-6715',
         'ARC-6633',
-        'ARC-6993'
+        'ARC-6632',
         ''
         ]
     main(arg_list)
