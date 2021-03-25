@@ -71,7 +71,7 @@ class JiraGraph(object):
 
         nodes = ';\n'.join(sorted([node.create_node_markup(node_options) for node in self.__graph_data['nodes']]))
         links = ';\n'.join(sorted(self.__graph_data['links']))
-        blockers = ';\n'.join(['"{}" [color=red, penwidth=2]'.format(node.create_node_name()) for node in self.__blocked])
+        blockers = ';\n'.join(['"{}"'.format(node.create_node_name()) for node in self.__blocked])
         
         dates = list(set(node.get_date() for node in self.__graph_data['nodes'] if node.get_date()))
         counts = {
@@ -113,16 +113,15 @@ class JiraGraph(object):
             graph_label.append('Blockers: ' + str(count_blockers))
         
         digraph = "digraph Dependencies {\n" + \
-            'graph [fontname=Helvetica];\n' + \
+            'graph [fontname=Helvetica, rankdir=LR, concentrate=true, compound=true, splines={}];\n'.format(options.line_type) + \
             'labelloc=top; labeljust=left;\n' + \
             'label="' + '\l'.join(graph_label) + '\l";\n' + \
             'node [fontname=Helvetica, shape=' + options.node_shape +'];' + '\n' + \
-            'graph [rankdir=LR];\n' + \
             '// Graph starts here\n' + \
-            '// Nodes\n' + nodes + '\n' + \
-            '// Edges (links)\n' + links + '\n' + \
-            '// These items are blocked\n' + blockers + '\n' + \
+            '// These items are blocked\nnode[color=red, penwidth=2.0];\n' + blockers + '\nnode [color=black, penwidth=1];\n' + \
             '// Grouped by date\n' + "\n".join(ranks) + '\n' + \
+            '// Nodes\n' + nodes + '\n' + \
+            '// Edges (links)\nedge[constraint=true];\n' + links + '\n' + \
             '}'
         return digraph
 
@@ -148,7 +147,7 @@ class JiraGraphRenderer(object):
         src = Source(digraph)
         name, suffix = path.splitext(options.image_file)
         suffix = suffix.replace(".", "")
-        src.render(filename = name, view = True, cleanup = True, format = suffix)
+        src.render(filename = name, view = True, cleanup = not options.verbose, format = suffix)
         return options.image_file
 
 
@@ -758,6 +757,8 @@ def parse_args(arg_list = []):
     parser.add_argument('-sP', '--show-sprint', dest='show_sprint', default=False, action='store_true', help='Show status.')
     parser.add_argument('-sD', '--show-date', dest='show_date', default=False, action='store_true', help='Show status.')
     
+    parser.add_argument('-lt', '--line-type', dest='line_type', default='curved', help='Line types: curved, ortho (right angles), line, compound/polyline (multi-line), none');
+
     parser.add_argument('--card-shape', action = type('', (argparse.Action, ), dict(__call__ = lambda a, p, n, v, o: getattr(n, a.dest).update(dict([v.split('=')])))), default = {}) # anonymously subclassing argparse.Action
     parser.add_argument('--project-shape', action = type('', (argparse.Action, ), dict(__call__ = lambda a, p, n, v, o: getattr(n, a.dest).update(dict([v.split('=')])))), default = {}) # anonymously subclassing argparse.Action
     parser.add_argument('--status-color', action = type('', (argparse.Action, ), dict(__call__ = lambda a, p, n, v, o: getattr(n, a.dest).update(dict([v.split('=')])))), default = {}) # anonymously subclassing argparse.Action
@@ -816,6 +817,7 @@ def main(arg_list = []):
 
 if __name__ == '__main__':
     arg_list = [
+        # "--verbose",
         '--user=gtempel@billtrust.com',
         '--password=QZ12rb4a5VEyBPwwOxZS8C27',
         '--jira=https://billtrust.atlassian.net',
@@ -840,10 +842,11 @@ if __name__ == '__main__':
         '--exclude-link=is blocked by',
         '--exclude-link=relates to',
         # '--exclude-link="is related to"',
-        '--link-label=blocks',
+        # '--link-label=blocks',
         '--link-label=packaged with',
         '--ignore-type=Bug',
         '--ignore-type=Test',
+        '--ignore-type=Technical task',
         # '--ignore-subtasks', 
         '--add-field=Epic Link',
         '--add-field=labels',
@@ -877,7 +880,6 @@ if __name__ == '__main__':
         '--project-exclude=CTD',
         '--project-exclude=EOPS',
         '--project-exclude=NJAT',
-        # '--project=INV20',
         '--node-shape', 'rect',
         '--card-shape', 'Certified=folder',
         '--card-shape', 'Epic=oval',
@@ -895,6 +897,9 @@ if __name__ == '__main__':
         '--show-status',
         '--show-sprint',
         '--show-date',
+        # '--grouped',
+        "--file=datamapping.pdf",
+        "--line-type=ortho",
         'ARC-7733',
         'ARC-7723',
         'ARC-7722',
