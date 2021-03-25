@@ -1,5 +1,6 @@
 The MIT License (MIT)
 
+Copyright (c) 2021 george tempel, based upon
 Copyright (c) 2015 Paweł Rychlik
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
