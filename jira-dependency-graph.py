@@ -818,8 +818,6 @@ def main(arg_list = []):
 if __name__ == '__main__':
     arg_list = [
         # "--verbose",
-        '--user=gtempel@billtrust.com',
-        '--password=QZ12rb4a5VEyBPwwOxZS8C27',
         '--jira=https://billtrust.atlassian.net',
         '--ignore-state=Closed',
         '--ignore-state=Done',
